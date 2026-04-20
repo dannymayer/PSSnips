@@ -25,7 +25,7 @@ jobs:
           if ($manifest.Version.ToString() -ne $tag) {
               throw "Tag version '$tag' does not match manifest version '$($manifest.Version)'. Update PSSnips.psd1 before tagging."
           }
-          Write-Host "Version match: $tag ✓"
+          Write-Host "Version match: $tag"
 
       - name: Install Pester and run tests (gate)
         shell: pwsh
@@ -54,4 +54,4 @@ jobs:
           PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
         run: |
           Publish-Module -Path . -NuGetApiKey $env:PSGALLERY_API_KEY -Repository PSGallery -Verbose
-          Write-Host "Published PSSnips ${{ github.ref_name }} to PowerShell Gallery ✓"
+          Write-Host "Published PSSnips ${{ github.ref_name }} to PowerShell Gallery"

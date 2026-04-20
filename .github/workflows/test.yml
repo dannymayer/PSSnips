@@ -49,12 +49,12 @@ jobs:
               $results | Format-Table RuleName, Severity, Line, Message -AutoSize
               throw "PSScriptAnalyzer found $($results.Count) issue(s)"
           }
-          Write-Host "PSScriptAnalyzer: clean ✓"
+          Write-Host "PSScriptAnalyzer: clean"
 
       - name: Validate module manifest
         run: |
           $m = Test-ModuleManifest .\PSSnips.psd1 -ErrorAction Stop
-          Write-Host "Manifest valid: $($m.Name) v$($m.Version) ✓"
+          Write-Host "Manifest valid: $($m.Name) v$($m.Version)"
 
       - name: Run Pester tests
         run: |
