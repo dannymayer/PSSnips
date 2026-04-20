@@ -1124,6 +1124,7 @@ function Get-Snip {
         $gistUrl      = if (-not $Shared -and $m.gistUrl) { $m.gistUrl } else { '' }
         $descValue    = if ($m.description) { $m.description } else { '' }
         $hashValue    = if ($m.ContainsKey('contentHash')) { $m['contentHash'] } else { '' }
+        $sourceValue  = if ($Shared) { '[shared]' } else { 'local' }
         $obj = [pscustomobject]@{
             PSTypeName   = 'PSSnips.SnippetInfo'
             Name         = [string]$name
@@ -1131,7 +1132,7 @@ function Get-Snip {
             Lang         = [string]$m.language
             Gist         = [string]$gistDisplay
             GistUrl      = [string]$gistUrl
-            Source       = [string](if ($Shared) { '[shared]' } else { 'local' })
+            Source       = [string]$sourceValue
             Tags         = [string]($tagArray -join ', ')
             TagList      = $tagArray
             Modified     = [string]$modifiedDisp
@@ -4232,7 +4233,7 @@ function Start-SnipManager {
 
             switch ($mode) {
                 'list'   { Write-SnipList   -list $list -s $sel -q $query -statusMsg $msg }
-                'detail' { if ($list.Count -gt 0) { Write-SnipDetail -item $list[$sel] } else { $mode = 'list' } }
+                'detail' { if ($list.Count -gt 0) { Clear-Host; Write-SnipDetail -item $list[$sel] } else { $mode = 'list' } }
             }
             $msg = ''
 

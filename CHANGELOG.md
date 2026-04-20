@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.0] — 2026-04-20
+
+### Breaking Changes
+
+- **`Get-Snip` output type** — The function no longer writes a coloured table to the
+  host. Display is now handled entirely by `PSSnips.Format.ps1xml`, which is
+  registered in the module manifest and applied automatically. Scripts that relied on
+  `Write-Host` side-effects from `Get-Snip` should instead pipe to `Format-Table` or
+  use the returned objects directly. The `[OutputType]` annotation is now
+  `'PSSnips.SnippetInfo'` (a named type) rather than `[PSCustomObject]`.
+
+### Added
+
+- **Typed output (`PSSnips.SnippetInfo`)** — `Get-Snip` now stamps every returned
+  object with `PSTypeName = 'PSSnips.SnippetInfo'`. New richly-typed properties:
+  - `Language` — full language name (alias for `Lang`)
+  - `TagList` — `[string[]]` array enabling `-contains` filtering
+  - `ModifiedDate` — `[datetime]` or `$null` for typed sorting
+  - `Description` — alias for `Desc`
+  - `ContentHash` — SHA-256 hash from the index
+  - `GistUrl` — full Gist URL when linked
+- **`PSSnips.Format.ps1xml`** — new format file registered via `FormatsToProcess`.
+  Renders a `TableControl` with pin indicator (★), NAME, LANG, GIST, TAGS, RUNS,
+  and MODIFIED columns using `<AutoSize/>`.
+- **Layered configuration (#26)** — Config is now resolved in priority order:
+  environment variables → workspace config → user config → module defaults.
+  - Environment variables: `PSSNIPS_DIR`, `PSSNIPS_EDITOR`, `PSSNIPS_DEFAULT_LANG`,
+    `PSSNIPS_GITHUB_TOKEN`, `PSSNIPS_GITHUB_USER`, `PSSNIPS_GITLAB_TOKEN`,
+    `PSSNIPS_GITLAB_URL`, `PSSNIPS_SHARED_DIR`, `PSSNIPS_WORKSPACE`
+  - Workspace config: `.pssnips/config.json` in the current directory (or path set by
+    `$env:PSSNIPS_WORKSPACE`). Ideal for per-project settings.
+  - `Set-SnipConfig -Scope Workspace` writes to the workspace config file.
+  - `Get-SnipConfig -ShowSources` displays which layer each value was resolved from.
+- **Event/hook system (#27)** — Subscribe to PSSnips lifecycle events:
+  - `Register-SnipEvent -Event <name> -Handler { param($e) ... }` — attaches a
+    script block to a named event. Returns a registration Id.
+  - `Unregister-SnipEvent -Event <name> -Id <id>` — removes a handler.
+  - Supported events: `SnipCreated`, `SnipEdited`, `SnipDeleted`, `SnipExecuted`
+    (with `Duration` timing), `SnipPublished` (GitHub/GitLab/Bitbucket).
+  - Handlers are synchronous, fire after each operation, and swallow errors via
+    `Write-Verbose` so a broken handler never disrupts normal usage.
+
+### Fixed
+
+- **TUI detail-view overdraw** — Transitioning from list view to snippet detail view
+  now calls `Clear-Host` before rendering, eliminating leftover list rows visible
+  behind the detail panel.
+
+---
+
 ## [1.2.2] — 2026-04-20
 
 ### Fixed
