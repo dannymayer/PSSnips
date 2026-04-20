@@ -273,6 +273,9 @@ function script:GetGitLabToken {
 }
 
 function script:GetBitbucketCreds {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'App password comes from env var or config; PSCredential requires SecureString.')]
+    param()
     $cfg  = script:LoadCfg
     $user = if ($env:BITBUCKET_USERNAME)     { $env:BITBUCKET_USERNAME }
             elseif ($cfg.ContainsKey('BitbucketUsername')    -and $cfg.BitbucketUsername)    { $cfg.BitbucketUsername }
@@ -482,7 +485,7 @@ function script:Write-AuditLog {
         foreach ($k in $Extra.Keys) { $entry[$k] = $Extra[$k] }
         $line = $entry | ConvertTo-Json -Compress
         Add-Content -Path $auditFile -Value $line -Encoding UTF8 -ErrorAction Stop
-    } catch { }
+    } catch { Write-Verbose "Audit log write failed (non-fatal): $($_.Exception.Message)" }
 }
 
 function script:GetSharedDir {
@@ -673,6 +676,12 @@ function Set-SnipConfig {
         as environment variables are never written to disk.
     #>
     [CmdletBinding(SupportsShouldProcess)]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'User explicitly opts in to DPAPI encryption; ConvertTo-SecureString required as first step.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingUsernameAndPasswordParams', '',
+        Justification = 'BitbucketUsername + BitbucketAppPassword are config setters, not authentication parameters.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', '',
+        Justification = 'BitbucketAppPassword is a config setter; plain string is required for CLI input.')]
     param(
         [ValidateNotNullOrEmpty()][string]$Editor,
         [ValidateNotNullOrEmpty()][string]$GitHubToken,
@@ -1026,7 +1035,7 @@ function Show-Snip {
                     }
                     Write-Host ''
                 }
-            } catch { }
+            } catch { Write-Verbose "Failed to read comments for '$Name': $($_.Exception.Message)" }
         }
     }
 
@@ -4775,7 +4784,6 @@ function Export-VSCodeSnips {
     param(
         [string]$Language  = '',
         [string]$OutputDir = '',
-        [switch]$WhatIf,
         [switch]$PassThru
     )
     script:InitEnv
@@ -4810,7 +4818,6 @@ function Export-VSCodeSnips {
     }
 
     $idx = script:LoadIdx
-    $cfg = script:LoadCfg
 
     # ── Group snippets by VS Code output file ──────────────────────────────
     $byFile = @{}   # outPath → hashtable of VS Code snippet entries
@@ -5140,7 +5147,7 @@ function Add-SnipTerminalProfile {
         for ($i = 0; $i -lt $schemeList.Count; $i++) {
             if ($schemeList[$i].name -eq 'PSSnips') { $existingIdx = $i; break }
         }
-        if ($existingIdx -ne $null) { $schemeList[$existingIdx] = $scheme }
+        if ($null -ne $existingIdx) { $schemeList[$existingIdx] = $scheme }
         else                        { $schemeList.Add($scheme) }
         $settings['schemes'] = $schemeList.ToArray()
 
@@ -5150,7 +5157,7 @@ function Add-SnipTerminalProfile {
         for ($i = 0; $i -lt $profileList.Count; $i++) {
             if ($profileList[$i].name -eq 'PSSnips TUI') { $profIdx = $i; break }
         }
-        if ($profIdx -ne $null) { $profileList[$profIdx] = $profileEntry }
+        if ($null -ne $profIdx) { $profileList[$profIdx] = $profileEntry }
         else                    { $profileList.Add($profileEntry) }
         $settings.profiles['list'] = $profileList.ToArray()
 
@@ -5323,7 +5330,7 @@ function Set-SnipRating {
         Ratings are stored in index.json alongside the snippet metadata.
         The 'ratedAt' timestamp uses ISO 8601 format.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, Position=0, HelpMessage='Snippet name to rate')]
         [ValidateNotNullOrEmpty()]
@@ -5337,6 +5344,7 @@ function Set-SnipRating {
     if (-not $idx.snippets.ContainsKey($Name)) {
         Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return
     }
+    if (-not $PSCmdlet.ShouldProcess($Name, "Set rating to $Stars star$(if ($Stars -ne 1) {'s'})")) { return }
     try {
         $idx.snippets[$Name]['rating']  = $Stars
         $idx.snippets[$Name]['ratedAt'] = Get-Date -Format 'o'
@@ -5476,7 +5484,7 @@ function New-SnipFromTemplate {
         Custom templates override built-in templates of the same name.
         Use Get-SnipTemplate to list all available templates.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, Position=0, HelpMessage='Template name')]
         [ValidateNotNullOrEmpty()]
@@ -5782,7 +5790,7 @@ function New-SnipSchedule {
     $trigger = switch -Regex ($Schedule) {
         '^Daily$'     { New-ScheduledTaskTrigger -Daily  -At $At }
         '^Weekly$'    { New-ScheduledTaskTrigger -Weekly -At $At -DaysOfWeek ([System.DayOfWeek](Get-Date).DayOfWeek) }
-        '^Hourly$'    { New-ScheduledTaskTrigger -Once   -At $At -RepetitionInterval (New-TimeSpan -Hours 1) }
+        '^Hourly$'    { New-ScheduledTaskTrigger -Once -At $At -RepetitionInterval (if ($RepeatInterval -ne [timespan]::Zero) { $RepeatInterval } else { New-TimeSpan -Hours 1 }) }
         '^OnLogon$'   { New-ScheduledTaskTrigger -AtLogOn }
         '^OnStartup$' { New-ScheduledTaskTrigger -AtStartup }
         default       { New-ScheduledTaskTrigger -Daily  -At $At }
