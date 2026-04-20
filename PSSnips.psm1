@@ -57,7 +57,7 @@ $script:LangColor = @{
 
 # Placeholder templates for new snippets
 $script:Templates = @{
-    ps1  = "# {name}`n# {desc}`n`n"
+    ps1  = "<#`n.SYNOPSIS`n    {desc}`n`n.DESCRIPTION`n    `n`n.NOTES`n    Snippet: {name}`n    Tags:`n#>`n`n"
     py   = "# {name}`n# {desc}`n`n"
     js   = "// {name}`n// {desc}`n`n"
     ts   = "// {name}`n// {desc}`n`n"
@@ -106,6 +106,46 @@ function script:Out-OK   { param([string]$m) Write-Host "  [+] $m" -ForegroundCo
 function script:Out-Err  { param([string]$m) Write-Host "  [!] $m" -ForegroundColor Red }
 function script:Out-Warn { param([string]$m) Write-Host "  [~] $m" -ForegroundColor Yellow }
 function script:Out-Info { param([string]$m) Write-Host "  [i] $m" -ForegroundColor DarkCyan }
+
+function script:ParseCBH {
+    <#
+    .SYNOPSIS
+        Parses PowerShell comment-based help from script content.
+    .DESCRIPTION
+        Extracts .SYNOPSIS, .DESCRIPTION, and Tags from the .NOTES section of the
+        first block-comment CBH section found in the provided content string.
+        Returns a hashtable with keys: Synopsis (string), Description (string),
+        Tags (string[]).
+    .NOTES
+        Only block-comment CBH (angle-bracket hash ... hash angle-bracket) is supported.
+        Line-comment CBH is not parsed. Tags are extracted from a "Tags: value1, value2"
+        line inside the .NOTES keyword section.
+    #>
+    param([Parameter(Mandatory)][string]$Content)
+    $result = @{ Synopsis = [string]$null; Description = [string]$null; Tags = @() }
+    if ($Content -notmatch '(?s)<#\s*(.*?)\s*#>') { return $result }
+    $block = $Matches[1]
+    # Single-line .SYNOPSIS — first non-blank line after the keyword
+    if ($block -match '(?m)\.SYNOPSIS[ \t]*\r?\n([ \t]*\S[^\r\n]*)') {
+        $result.Synopsis = $Matches[1].Trim()
+    }
+    # Multi-line .DESCRIPTION — everything up to the next .KEYWORD or end of block
+    if ($block -match '(?s)\.DESCRIPTION[ \t]*\r?\n(.*?)(?=\r?\n[ \t]*\.\w|\z)') {
+        $lines = ($Matches[1] -split '\r?\n') |
+            ForEach-Object { $_.Trim() } |
+            Where-Object   { $_ }
+        if ($lines) { $result.Description = ($lines -join ' ').Trim() }
+    }
+    # Tags: line inside .NOTES (comma- or space-separated)
+    if ($block -match '(?s)\.NOTES.*?Tags?:[ \t]*([^\r\n]+)') {
+        $result.Tags = @(
+            ($Matches[1].Trim() -split '[,\s]+') |
+                ForEach-Object { $_.Trim() } |
+                Where-Object   { $_ }
+        )
+    }
+    return $result
+}
 
 function script:EnsureDirs {
     $cfg = script:LoadCfg
@@ -1274,6 +1314,19 @@ function Add-Snip {
             script:SaveVersion -Name $Name -FilePath $fp
         }
 
+        # Auto-extract CBH metadata from PowerShell files when no explicit values provided
+        if ($langExt -in 'ps1','psm1' -and $content) {
+            $cbh = script:ParseCBH -Content $content
+            if (-not $Description -and $cbh.Synopsis) {
+                $Description = $cbh.Synopsis
+                script:Out-Info "Description from CBH .SYNOPSIS: $Description"
+            }
+            if ($Tags.Count -eq 0 -and $cbh.Tags.Count -gt 0) {
+                $Tags = $cbh.Tags
+                script:Out-Info "Tags from CBH .NOTES: $($Tags -join ', ')"
+            }
+        }
+
         # Duplicate content detection
         $addHash = script:GetContentHash -Content $content
         if (-not $IgnoreDuplicate) {
@@ -1423,13 +1476,26 @@ function Edit-Snip {
     & $ed $path
     script:Write-AuditLog -Operation 'Edit' -SnippetName $Name
 
-    # Touch the modified timestamp and recompute content hash
+    # Touch the modified timestamp and recompute content hash; auto-sync CBH for PS1 files
     $idx = script:LoadIdx
     if ($idx.snippets.ContainsKey($Name)) {
         $idx.snippets[$Name]['modified'] = Get-Date -Format 'o'
         if (Test-Path $path) {
             $editedContent = Get-Content $path -Raw -Encoding UTF8
             $idx.snippets[$Name]['contentHash'] = script:GetContentHash -Content $editedContent
+            # Auto-fill empty description/tags from CBH for PowerShell snippets
+            $ext = [System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()
+            if ($ext -in 'ps1','psm1') {
+                $cbh = script:ParseCBH -Content $editedContent
+                if ($cbh.Synopsis -and -not $idx.snippets[$Name]['description']) {
+                    $idx.snippets[$Name]['description'] = $cbh.Synopsis
+                    script:Out-Info "Description synced from .SYNOPSIS: $($cbh.Synopsis)"
+                }
+                if ($cbh.Tags.Count -gt 0 -and @($idx.snippets[$Name]['tags']).Count -eq 0) {
+                    $idx.snippets[$Name]['tags'] = $cbh.Tags
+                    script:Out-Info "Tags synced from .NOTES: $($cbh.Tags -join ', ')"
+                }
+            }
         }
         script:SaveIdx -Idx $idx
         script:UpdateFts -Name $Name
@@ -4050,7 +4116,7 @@ function Start-SnipManager {
             } else {
                 # detail mode
                 switch ($vk) {
-                    { $_ -in 27,37 } { $mode = 'list'; Clear-Host }   # Esc / Left
+                    { $_ -in 8,27,37 } { $mode = 'list'; Clear-Host }   # Backspace / Esc / Left
                     default {
                         switch ($ch) {
                             'e' {
@@ -6094,6 +6160,126 @@ function Initialize-SnipPreCommitHook {
     }
 }
 
+function Sync-SnipMetadata {
+    <#
+    .SYNOPSIS
+        Synchronises snippet index metadata from PowerShell comment-based help (CBH).
+
+    .DESCRIPTION
+        Scans local .ps1 and .psm1 snippets for block-comment CBH and updates the
+        index with values extracted from .SYNOPSIS (→ description) and .NOTES Tags:
+        (→ tags). By default only empty fields are filled. Use -Overwrite to replace
+        existing values. Use -WhatIf to preview changes without applying them.
+
+        This eliminates the need to maintain the same information in both the snippet
+        file's CBH block and the PSSnips index entry — the CBH becomes the authoritative
+        source for PowerShell snippet metadata.
+
+    .PARAMETER Name
+        Optional. The name of a single snippet to sync. Omit to scan all .ps1/.psm1
+        snippets.
+
+    .PARAMETER Overwrite
+        Optional switch. When set, overwrites existing description and tags with CBH
+        values even when they are already populated. Default: fills empty fields only.
+
+    .EXAMPLE
+        Sync-SnipMetadata
+
+        Scans all PS1/PSM1 snippets and auto-fills any empty description or tags from CBH.
+
+    .EXAMPLE
+        Sync-SnipMetadata -Overwrite
+
+        Overwrites all description and tag fields with values extracted from CBH.
+
+    .EXAMPLE
+        Sync-SnipMetadata -Name deploy-script -WhatIf
+
+        Previews what would be updated for the 'deploy-script' snippet without applying.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        None. Writes a per-snippet summary and a final count to the host.
+
+    .NOTES
+        Only block-comment CBH (angle-bracket hash ... hash angle-bracket) is parsed.
+        Tags are read from a "Tags: value1, value2" line inside the .NOTES keyword section.
+        Snippets without a CBH block, or whose CBH yields no usable fields, are skipped.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Position=0)][string]$Name,
+        [switch]$Overwrite
+    )
+    script:InitEnv
+    $idx = script:LoadIdx
+
+    $targets = if ($Name) {
+        if (-not $idx.snippets.ContainsKey($Name)) {
+            Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return
+        }
+        @($Name)
+    } else {
+        @($idx.snippets.Keys | Where-Object {
+            $idx.snippets[$_]['language'] -in 'ps1','psm1'
+        })
+    }
+
+    $updated = 0; $skipped = 0
+    foreach ($n in $targets) {
+        $filePath = script:FindFile -Name $n
+        if (-not $filePath -or -not (Test-Path $filePath)) { $skipped++; continue }
+        $ext = [System.IO.Path]::GetExtension($filePath).TrimStart('.').ToLower()
+        if ($ext -notin 'ps1','psm1') { $skipped++; continue }
+
+        $content = Get-Content $filePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if (-not $content) { $skipped++; continue }
+
+        $cbh = script:ParseCBH -Content $content
+        if (-not $cbh.Synopsis -and $cbh.Tags.Count -eq 0) { $skipped++; continue }
+
+        $entry        = $idx.snippets[$n]
+        $descChanged  = $false
+        $tagsChanged  = $false
+
+        if ($cbh.Synopsis) {
+            $emptyDesc = -not $entry['description']
+            if ($emptyDesc -or $Overwrite) {
+                if ($PSCmdlet.ShouldProcess($n, "Set description to '$($cbh.Synopsis)'")) {
+                    $entry['description'] = $cbh.Synopsis
+                    $descChanged = $true
+                }
+            }
+        }
+
+        if ($cbh.Tags.Count -gt 0) {
+            $emptyTags = @($entry['tags']).Count -eq 0
+            if ($emptyTags -or $Overwrite) {
+                if ($PSCmdlet.ShouldProcess($n, "Set tags to [$($cbh.Tags -join ', ')]")) {
+                    $entry['tags'] = $cbh.Tags
+                    $tagsChanged = $true
+                }
+            }
+        }
+
+        if ($descChanged -or $tagsChanged) {
+            $updated++
+            $parts = @()
+            if ($descChanged) { $parts += "description='$($cbh.Synopsis)'" }
+            if ($tagsChanged) { $parts += "tags=[$($cbh.Tags -join ', ')]" }
+            script:Out-OK "  $n — $($parts -join ', ')"
+        } else {
+            $skipped++
+        }
+    }
+
+    if ($updated -gt 0 -and -not $WhatIfPreference) { script:SaveIdx -Idx $idx }
+    script:Out-Info "Sync complete — $updated updated, $skipped skipped."
+}
+
 #endregion
 
 Export-ModuleMember -Function @(
@@ -6115,5 +6301,6 @@ Export-ModuleMember -Function @(
     'Set-SnipRating', 'Add-SnipComment',
     'New-SnipFromTemplate', 'Get-SnipTemplate',
     'New-SnipSchedule', 'Get-SnipSchedule', 'Remove-SnipSchedule',
-    'Initialize-SnipPreCommitHook'
+    'Initialize-SnipPreCommitHook',
+    'Sync-SnipMetadata'
 ) -Alias 'snip'

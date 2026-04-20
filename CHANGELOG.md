@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.2] — 2026-04-20
+
+### Fixed
+
+- **TUI Backspace navigation** — Backspace (VK 8) now returns to the list view from
+  snippet detail view, consistent with Escape and Left arrow.
+
+### Added
+
+- **CBH metadata integration** — `.ps1` and `.psm1` snippets now use PowerShell
+  comment-based help as the authoritative metadata source:
+  - New `.ps1` snippet template uses a proper CBH block (`.SYNOPSIS`, `.DESCRIPTION`,
+    `.NOTES` with `Tags:` line) instead of plain line comments.
+  - `Edit-Snip` — after the editor closes, auto-fills an empty index `description`
+    from `.SYNOPSIS` and empty `tags` from `.NOTES Tags:` without prompting.
+  - `Add-Snip` — when importing a `.ps1`/`.psm1` file with no `-Description` or
+    `-Tags` provided, CBH fields are extracted and stored automatically.
+  - `Sync-SnipMetadata` — new public command to retroactively sync all (or a named)
+    `.ps1`/`.psm1` snippet's index entry from its CBH. Supports `-Overwrite` to
+    replace existing values and `-WhatIf` to preview.
+
+---
+
 ## [1.2.0] — 2026-04-20
 
 ### Added
