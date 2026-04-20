@@ -107,7 +107,7 @@ function script:LoadCfg {
                         $loaded = $raw | ConvertFrom-Json -AsHashtable
                         foreach ($k in $loaded.Keys) { $cfg[$k] = $loaded[$k] }
                     }
-        } catch { <# fall through to defaults #> }
+        } catch { Write-Verbose "LoadCfg: using defaults — $($_.Exception.Message)" }
     }
     return $cfg
 }
@@ -126,7 +126,7 @@ function script:LoadIdx {
                 if (-not $idx.ContainsKey('snippets')) { $idx['snippets'] = @{} }
                 return $idx
             }
-        } catch { <# fall through #> }
+        } catch { Write-Verbose "LoadIdx: reinitialising index — $($_.Exception.Message)" }
     }
     return @{ snippets = @{} }
 }
@@ -3216,15 +3216,15 @@ function Start-SnipManager {
 # public functions above. Named switches (-Language, -Tags, etc.) are forwarded
 # to the appropriate function.
 
-function snip {
+function Invoke-SnipCLI {
     <#
     .SYNOPSIS
-        PSSnips main entry point — dispatches sub-commands or launches the interactive TUI.
+        PSSnips main entry point (Invoke-SnipCLI, alias: snip) — dispatches sub-commands or launches the interactive TUI.
 
     .DESCRIPTION
-        The 'snip' function is the primary command-line interface for PSSnips. When
-        called with no arguments it launches the full-screen interactive TUI. With a
-        sub-command it routes to the appropriate PSSnips function.
+        Invoke-SnipCLI (invoked via the 'snip' alias) is the primary command-line interface
+        for PSSnips. When called with no arguments it launches the full-screen interactive TUI.
+        With a sub-command it routes to the appropriate PSSnips function.
 
         Sub-commands:
           (none) / ui / tui  Open the interactive TUI (Start-SnipManager)
@@ -3514,6 +3514,7 @@ function snip {
         }
     }
 }
+Set-Alias -Name snip -Value Invoke-SnipCLI -Scope Global -Description 'PSSnips dispatcher alias'
 
 #endregion
 
@@ -3526,8 +3527,8 @@ $snipNameCompleter = {
     $idx.snippets.Keys | Where-Object { $_ -like "$word*" } | Sort-Object
 }
 
-Register-ArgumentCompleter -CommandName 'snip','Show-Snip','Edit-Snip','Invoke-Snip','Remove-Snip','Copy-Snip','Export-Gist','Sync-Gist','Set-SnipTag' -ParameterName Name -ScriptBlock $snipNameCompleter
-Register-ArgumentCompleter -CommandName 'snip' -ParameterName Arg1 -ScriptBlock $snipNameCompleter
+Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip','Show-Snip','Edit-Snip','Invoke-Snip','Remove-Snip','Copy-Snip','Export-Gist','Sync-Gist','Set-SnipTag' -ParameterName Name -ScriptBlock $snipNameCompleter
+Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip' -ParameterName Arg1 -ScriptBlock $snipNameCompleter
 
 #endregion
 
@@ -3593,5 +3594,5 @@ Export-ModuleMember -Function @(
     'Install-PSSnips', 'Uninstall-PSSnips',
     'Start-SnipManager',
     'Get-SnipHistory', 'Restore-Snip', 'Test-Snip',
-    'snip'
-)
+    'Invoke-SnipCLI'
+) -Alias 'snip'

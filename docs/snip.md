@@ -5,22 +5,22 @@ online version:
 schema: 2.0.0
 ---
 
-# snip
+# Invoke-SnipCLI
 
 ## SYNOPSIS
-PSSnips main entry point - dispatches sub-commands or launches the interactive TUI.
+PSSnips main entry point (Invoke-SnipCLI, alias: snip) — dispatches sub-commands or launches the interactive TUI.
 
 ## SYNTAX
 
 ```
-snip [[-Command] <String>] [[-Arg1] <String>] [[-Arg2] <String>] [-Rest <String[]>] [-Language <String>]
+Invoke-SnipCLI [[-Command] <String>] [[-Arg1] <String>] [[-Arg2] <String>] [-Rest <String[]>] [-Language <String>]
  [-Description <String>] [-Tags <String[]>] [-Content <String>] [-Path <String>] [-Editor <String>]
  [-Token <String>] [-Username <String>] [-Public] [-Force] [-Push] [-Clip] [-All]
  [-ProgressAction <ActionPreference>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
-The 'snip' function is the primary command-line interface for PSSnips.
+`Invoke-SnipCLI` is the primary command-line interface for PSSnips, exposed via the `snip` alias.
 When
 called with no arguments it launches the full-screen interactive TUI.
 With a

@@ -1,0 +1,51 @@
+name: Bug Report
+description: Report a bug or unexpected behaviour
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a bug!
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      placeholder: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Import-Module PSSnips
+        2. Run '...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: input
+    id: ps-version
+    attributes:
+      label: PowerShell version
+      placeholder: "$PSVersionTable.PSVersion"
+    validations:
+      required: true
+  - type: input
+    id: module-version
+    attributes:
+      label: PSSnips version
+      placeholder: "(Get-Module PSSnips).Version"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true

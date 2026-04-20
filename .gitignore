@@ -1,0 +1,25 @@
+# User data
+.pssnips/
+
+# PowerShell
+*.ps1xml
+!en-US/*.xml
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Temp / build
+*.tmp
+*.bak
+*.log
+nupkg/
+*.nupkg

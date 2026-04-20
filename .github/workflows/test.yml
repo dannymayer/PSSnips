@@ -1,0 +1,75 @@
+name: Test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        shell: [powershell, pwsh]   # powershell = Windows PS 5.1, pwsh = PS 7.x
+      fail-fast: false
+
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: ${{ matrix.shell }} {0}
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          if (-not (Get-Module Pester -ListAvailable | Where-Object Version -ge '5.0')) {
+              Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+          }
+
+      - name: Install PSScriptAnalyzer
+        shell: ${{ matrix.shell }} {0}
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          if (-not (Get-Module PSScriptAnalyzer -ListAvailable)) {
+              Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+
+      - name: Run PSScriptAnalyzer
+        shell: ${{ matrix.shell }} {0}
+        run: |
+          Import-Module PSScriptAnalyzer
+          $results = Invoke-ScriptAnalyzer -Path .\PSSnips.psm1 -Severity Error,Warning
+          if ($results) {
+              $results | Format-Table RuleName, Severity, Line, Message -AutoSize
+              throw "PSScriptAnalyzer found $($results.Count) issue(s)"
+          }
+          Write-Host "PSScriptAnalyzer: clean ✓"
+
+      - name: Validate module manifest
+        shell: ${{ matrix.shell }} {0}
+        run: |
+          $m = Test-ModuleManifest .\PSSnips.psd1 -ErrorAction Stop
+          Write-Host "Manifest valid: $($m.Name) v$($m.Version) ✓"
+
+      - name: Run Pester tests
+        shell: ${{ matrix.shell }} {0}
+        run: |
+          Import-Module Pester -MinimumVersion 5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = '.\PSSnips.Tests.ps1'
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = 'TestResults.xml'
+          $config.TestResult.OutputFormat = 'NUnitXml'
+          $result = Invoke-Pester -Configuration $config -PassThru
+          if ($result.FailedCount -gt 0) {
+              throw "$($result.FailedCount) test(s) failed"
+          }
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.shell }}
+          path: TestResults.xml
