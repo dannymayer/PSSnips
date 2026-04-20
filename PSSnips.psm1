@@ -376,7 +376,7 @@ function Set-SnipConfig {
         GitHub tokens are stored in plain text; consider using $env:GITHUB_TOKEN
         as an alternative for improved security.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [ValidateNotNullOrEmpty()][string]$Editor,
         [ValidateNotNullOrEmpty()][string]$GitHubToken,
@@ -744,7 +744,7 @@ function New-Snip {
         The editor is determined by script:GetEditor which walks the configured
         Editor then EditorFallbacks list.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, Position=0, HelpMessage = 'Name of the new snippet')]
         [ValidateNotNullOrEmpty()]
@@ -1287,7 +1287,7 @@ function Invoke-Snip {
             $idxH.snippets[$Name]['lastRun']  = Get-Date -Format 'o'
             script:SaveIdx -Idx $idxH
         }
-    } catch { <# history update failure must not affect snippet output #> }
+    } catch { Write-Verbose "Run-history update failed (non-fatal): $_" }
 }
 
 function Get-SnipHistory {
@@ -1686,7 +1686,7 @@ function Set-SnipTag {
         guarantee correct array serialisation in JSON, avoiding the PS 5.1
         single-element array-to-string collapse that can occur with ConvertTo-Json.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, Position=0, HelpMessage = 'Name of the snippet to tag')]
         [ValidateNotNullOrEmpty()]
@@ -2998,7 +2998,7 @@ function Start-SnipManager {
         redirected. The TUI shows up to 20 snippets per page; use [/] to filter
         when the collection exceeds 20 items.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param()
     script:InitEnv
 
@@ -3025,7 +3025,7 @@ function Start-SnipManager {
         return @($pinnedItems) + @($unpinnedItems)
     }
 
-    function Draw-List {
+    function Write-SnipList {
         param([array]$list, [int]$s, [string]$q, [string]$statusMsg)
         [Console]::SetCursorPosition(0,0)
         script:Out-Banner
@@ -3061,7 +3061,7 @@ function Start-SnipManager {
         Write-Host "" 
     }
 
-    function Draw-Detail {
+    function Write-SnipDetail {
         param([pscustomobject]$item)
         [Console]::SetCursorPosition(0,0)
         $c    = script:LangColor -ext $item.Meta.language
@@ -3093,8 +3093,8 @@ function Start-SnipManager {
             if ($sel -ge $list.Count) { $sel = [Math]::Max(0, $list.Count - 1) }
 
             switch ($mode) {
-                'list'   { Draw-List   -list $list -s $sel -q $query -statusMsg $msg }
-                'detail' { if ($list.Count -gt 0) { Draw-Detail -item $list[$sel] } else { $mode = 'list' } }
+                'list'   { Write-SnipList   -list $list -s $sel -q $query -statusMsg $msg }
+                'detail' { if ($list.Count -gt 0) { Write-SnipDetail -item $list[$sel] } else { $mode = 'list' } }
             }
             $msg = ''
 
@@ -3377,16 +3377,16 @@ function Invoke-SnipCLI {
         '^(new|create|n)$' {
             $n = if ($Arg1) { $Arg1 } else { Read-Host "  Snippet name" }
             $l = if ($Language) { $Language } elseif ($Arg2) { $Arg2 } else { '' }
-            New-Snip -Name $n -Language $l -Description $Description -Tags $Tags -Content $Content -Editor $Editor
+            New-Snip -Name $n -Language $l -Description $Description -Tags $Tags -Content $Content -Editor $Editor -IgnoreDuplicate:$IgnoreDuplicate
         }
 
         '^(add|a)$' {
             $n = if ($Arg1) { $Arg1 } else { Read-Host "  Snippet name" }
             $p = if ($Path) { $Path } elseif ($Arg2) { $Arg2 } else { '' }
             if ($Clip) {
-                Add-Snip -Name $n -FromClipboard -Language $Language -Description $Description -Tags $Tags -Force:$Force
+                Add-Snip -Name $n -FromClipboard -Language $Language -Description $Description -Tags $Tags -Force:$Force -IgnoreDuplicate:$IgnoreDuplicate
             } elseif ($p) {
-                Add-Snip -Name $n -Path $p -Language $Language -Description $Description -Tags $Tags -Force:$Force
+                Add-Snip -Name $n -Path $p -Language $Language -Description $Description -Tags $Tags -Force:$Force -IgnoreDuplicate:$IgnoreDuplicate
             } else {
                 script:Out-Err "Specify -Path <file> or -Clip for clipboard."
             }
@@ -3523,6 +3523,7 @@ Set-Alias -Name snip -Value Invoke-SnipCLI -Scope Global -Description 'PSSnips d
 
 $snipNameCompleter = {
     param($cmd, $param, $word)
+    $null = $cmd, $param
     $idx = script:LoadIdx
     $idx.snippets.Keys | Where-Object { $_ -like "$word*" } | Sort-Object
 }
