@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] — 2026-04-20
+
+### Fixed
+
+- **PowerShell minimum version** declared as 7.0; drops PS 5.1 support
+  (`PowerShellVersion = '7.0'`, `CompatiblePSEditions = @('Core')`).
+- **Unicode encoding fix** in CI workflow files to ensure consistent UTF-8
+  output on Windows runners.
+- **PSScriptAnalyzerSettings.psd1** added to repository to enforce consistent
+  static analysis rules across local and CI runs.
+- **SupportsShouldProcess** (`-WhatIf` / `-Confirm`) added to `Set-SnipConfig`,
+  `New-Snip`, `Set-SnipTag`, and `Start-SnipManager`.
+- **Private TUI helper functions** renamed from unapproved verbs to approved
+  verbs: `Draw-List` → `Write-SnipList`, `Draw-Detail` → `Write-SnipDetail`.
+
+---
+
 ## [1.0.0] — 2026-01-01
 
 ### Added
@@ -78,4 +95,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.1]: https://github.com/dannymayer/PSSnips/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/dannymayer/PSSnips/releases/tag/v1.0.0

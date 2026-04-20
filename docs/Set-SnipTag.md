@@ -15,7 +15,7 @@ Also supports pinning (favouriting) snippets.
 
 ```
 Set-SnipTag [-Name] <String> [-Tags <String[]>] [-Add <String[]>] [-Remove <String[]>]
- [-Pin] [-Unpin] [-ProgressAction <ActionPreference>] [<CommonParameters>]
+ [-Pin] [-Unpin] [-ProgressAction <ActionPreference>] [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -185,6 +185,36 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
+### -Confirm
+Prompts you for confirmation before running the cmdlet.
+
+```yaml
+Type: System.Management.Automation.SwitchParameter
+Parameter Sets: (All)
+Aliases: cf
+
+Required: False
+Position: Named
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -WhatIf
+Shows what would happen if the cmdlet runs. The cmdlet is not run.
+
+```yaml
+Type: System.Management.Automation.SwitchParameter
+Parameter Sets: (All)
+Aliases: wi
+
+Required: False
+Position: Named
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
 ### CommonParameters
 This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable, -InformationAction, -InformationVariable, -OutVariable, -OutBuffer, -PipelineVariable, -Verbose, -WarningAction, and -WarningVariable. For more information, see [about_CommonParameters](http://go.microsoft.com/fwlink/?LinkID=113216).
 
@@ -196,7 +226,8 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 ### None. Writes a confirmation message listing the updated tags.
 ## NOTES
 Tags are normalised through \[System.Collections.Generic.List\[string\]\] to
-guarantee correct array serialisation in JSON, avoiding the PS 5.1
-single-element array-to-string collapse that can occur with ConvertTo-Json.
+guarantee correct array serialisation in JSON (PowerShell 7.0+ ConvertTo-Json
+preserves single-element arrays natively, but the List normalisation is
+retained for defensive correctness).
 
 ## RELATED LINKS

@@ -1,7 +1,7 @@
 ﻿<#
 .NOTES
     Module  : PSSnips
-    Version : 1.0.0
+    Version : 1.0.1
     Author  : PSSnips Contributors
     License : MIT
     Requires: PowerShell 7.0+, Windows
@@ -1683,8 +1683,9 @@ function Set-SnipTag {
 
     .NOTES
         Tags are normalised through [System.Collections.Generic.List[string]] to
-        guarantee correct array serialisation in JSON, avoiding the PS 5.1
-        single-element array-to-string collapse that can occur with ConvertTo-Json.
+        guarantee correct array serialisation in JSON (PowerShell 7.0+ ConvertTo-Json
+        preserves single-element arrays natively, but the List normalisation is
+        retained for defensive correctness).
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -1773,7 +1774,7 @@ function Export-SnipCollection {
 
     .NOTES
         Requires PowerShell 5.0+ for Compress-Archive (already satisfied by the
-        module's #Requires -Version 5.1 declaration).
+        module's #Requires -Version 7.0 declaration).
         The archive is created via a temporary staging directory that is removed
         automatically on completion or error.
     #>

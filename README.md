@@ -1,17 +1,21 @@
 # PSSnips – PowerShell Snippet Manager
 
-A terminal-first snippet manager for Windows PowerShell, with GitHub Gist integration and support for Microsoft Edit, Neovim, and VS Code.
+A terminal-first snippet manager for PowerShell 7.0+ on Windows, with GitHub Gist integration and support for Microsoft Edit, Neovim, and VS Code.
+
+---
+
+## Requirements
+
+- **PowerShell 7.0+** (PowerShell Core — `pwsh.exe`)
+- **Windows** (uses Windows clipboard, console APIs, and `~\.pssnips\` data path)
 
 ---
 
 ## Quick Start
 
 ```powershell
-# Import once per session (add to $PROFILE for permanent access)
-Import-Module "C:\path\to\PSSnips\PSSnips.psd1"
-
-# Or add to $PROFILE permanently:
-Add-Content $PROFILE "`nImport-Module 'C:\path\to\PSSnips\PSSnips.psd1'"
+# Install from the PowerShell Gallery (recommended)
+Install-Module PSSnips
 
 snip            # launch interactive TUI
 snip help       # show all commands
@@ -21,6 +25,14 @@ snip help       # show all commands
 
 ## Installation
 
+### From the PowerShell Gallery (recommended)
+
+```powershell
+Install-Module PSSnips
+```
+
+### Manual install
+
 1. Clone or copy the `PSSnips` folder anywhere you like.
 2. Import the module in your PowerShell session:
 
@@ -28,7 +40,13 @@ snip help       # show all commands
 Import-Module "C:\...\PSSnips\PSSnips.psd1"
 ```
 
-3. (Optional) Add GitHub token to enable Gist features:
+3. (Optional) Add to `$PROFILE` for permanent access:
+
+```powershell
+Add-Content $PROFILE "`nImport-Module PSSnips"
+```
+
+4. (Optional) Add a GitHub token to enable Gist features:
 
 ```powershell
 snip config -Token ghp_yourPersonalAccessToken
@@ -218,7 +236,7 @@ Override at any time: `snip edit mysnip -Editor code`
 
 ```powershell
 # Add to your PowerShell profile ($PROFILE):
-Import-Module "C:\...\PSSnips\PSSnips.psd1" -ErrorAction SilentlyContinue
+Import-Module PSSnips -ErrorAction SilentlyContinue
 ```
 
 ---
