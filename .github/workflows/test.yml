@@ -15,12 +15,16 @@ jobs:
 
     runs-on: windows-latest
 
+    # Set shell once at the job level — step-level shell: doesn't support matrix expressions
+    defaults:
+      run:
+        shell: ${{ matrix.shell }} {0}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Pester
-        shell: ${{ matrix.shell }} {0}
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           if (-not (Get-Module Pester -ListAvailable | Where-Object Version -ge '5.0')) {
@@ -28,7 +32,6 @@ jobs:
           }
 
       - name: Install PSScriptAnalyzer
-        shell: ${{ matrix.shell }} {0}
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           if (-not (Get-Module PSScriptAnalyzer -ListAvailable)) {
@@ -36,7 +39,6 @@ jobs:
           }
 
       - name: Run PSScriptAnalyzer
-        shell: ${{ matrix.shell }} {0}
         run: |
           Import-Module PSScriptAnalyzer
           $results = Invoke-ScriptAnalyzer -Path .\PSSnips.psm1 -Severity Error,Warning
@@ -47,13 +49,11 @@ jobs:
           Write-Host "PSScriptAnalyzer: clean ✓"
 
       - name: Validate module manifest
-        shell: ${{ matrix.shell }} {0}
         run: |
           $m = Test-ModuleManifest .\PSSnips.psd1 -ErrorAction Stop
           Write-Host "Manifest valid: $($m.Name) v$($m.Version) ✓"
 
       - name: Run Pester tests
-        shell: ${{ matrix.shell }} {0}
         run: |
           Import-Module Pester -MinimumVersion 5.0
           $config = New-PesterConfiguration
