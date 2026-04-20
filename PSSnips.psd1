@@ -30,7 +30,8 @@
         'New-SnipFromTemplate', 'Get-SnipTemplate',
         'New-SnipSchedule', 'Get-SnipSchedule', 'Remove-SnipSchedule',
         'Initialize-SnipPreCommitHook',
-        'Sync-SnipMetadata'
+        'Sync-SnipMetadata',
+        'Register-SnipEvent', 'Unregister-SnipEvent'
     )
 
     AliasesToExport   = @('snip')

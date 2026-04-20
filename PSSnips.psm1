@@ -47,6 +47,21 @@ $script:Defaults = [ordered]@{
     BitbucketAppPassword = ''
 }
 
+# Environment variable → config key mapping (used by LoadCfg for layer 3 resolution)
+$script:EnvVarMap = [ordered]@{
+    PSSNIPS_DIR          = 'SnippetsDir'
+    PSSNIPS_EDITOR       = 'Editor'
+    PSSNIPS_DEFAULT_LANG = 'DefaultLanguage'
+    PSSNIPS_GITHUB_TOKEN = 'GitHubToken'
+    PSSNIPS_GITHUB_USER  = 'GitHubUsername'
+    PSSNIPS_GITLAB_TOKEN = 'GitLabToken'
+    PSSNIPS_GITLAB_URL   = 'GitLabUrl'
+    PSSNIPS_SHARED_DIR   = 'SharedSnippetsDir'
+    PSSNIPS_WORKSPACE    = 'WorkspaceConfigDir'
+}
+
+$script:WorkspaceCfgFile = ''   # resolved at InitEnv time
+
 # Map extension → color for display
 $script:LangColor = @{
     ps1  = 'Cyan';    psm1 = 'Cyan';   py  = 'Yellow'; js  = 'Yellow'
@@ -81,6 +96,9 @@ $script:CompleterTtlSecs   = 10
 # Full-text search sidecar cache (path set in InitEnv)
 $script:FtsCache     = $null
 $script:FtsCacheFile = ''
+
+# Event handler registry: hashtable of event-name → hashtable of (id → scriptblock)
+$script:EventRegistry = @{}
 
 #endregion
 
@@ -147,6 +165,24 @@ function script:ParseCBH {
     return $result
 }
 
+function script:Invoke-SnipEvent {
+    <#
+    .SYNOPSIS
+        Raises a named PSSnips lifecycle event, invoking all registered handlers.
+    .NOTES
+        Errors in individual handlers are silently swallowed via Write-Verbose to
+        prevent a broken handler from disrupting normal module operations.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$EventName,
+        [hashtable]$Data = @{}
+    )
+    if (-not $script:EventRegistry.ContainsKey($EventName)) { return }
+    foreach ($handler in $script:EventRegistry[$EventName].Values) {
+        try { & $handler $Data } catch { Write-Verbose "PSSnips event handler error [$EventName]: $_" }
+    }
+}
+
 function script:EnsureDirs {
     $cfg = script:LoadCfg
     foreach ($d in @($script:Home, $cfg.SnippetsDir, (Join-Path $script:Home 'history'))) {
@@ -155,24 +191,40 @@ function script:EnsureDirs {
 }
 
 function script:LoadCfg {
-    if (-not $script:CfgDirty -and $null -ne $script:CfgCache) {
-        return $script:CfgCache
-    }
-    # Build a plain hashtable copy of defaults (OrderedDictionary has no .Clone())
+    if (-not $script:CfgDirty -and $null -ne $script:CfgCache) { return $script:CfgCache }
+
+    # Start with defaults
     $cfg = @{}
     $script:Defaults.GetEnumerator() | ForEach-Object { $cfg[$_.Key] = $_.Value }
 
+    # Layer 1: user config (~/.pssnips/config.json)
     if (Test-Path $script:CfgFile) {
         try {
             $raw = Get-Content $script:CfgFile -Raw -Encoding UTF8 -ErrorAction Stop
             if ($raw) {
-                        # -AsHashtable returns a [hashtable] rather than PSCustomObject
-                        # for easy key enumeration and merging with the defaults.
-                        $loaded = $raw | ConvertFrom-Json -AsHashtable
-                        foreach ($k in $loaded.Keys) { $cfg[$k] = $loaded[$k] }
-                    }
-        } catch { Write-Verbose "LoadCfg: using defaults — $($_.Exception.Message)" }
+                $loaded = $raw | ConvertFrom-Json -AsHashtable
+                foreach ($k in $loaded.Keys) { $cfg[$k] = $loaded[$k] }
+            }
+        } catch { Write-Verbose "LoadCfg: user config error — $($_.Exception.Message)" }
     }
+
+    # Layer 2: workspace config (.pssnips/config.json in cwd, or $env:PSSNIPS_WORKSPACE)
+    if ($script:WorkspaceCfgFile -and (Test-Path $script:WorkspaceCfgFile)) {
+        try {
+            $raw = Get-Content $script:WorkspaceCfgFile -Raw -Encoding UTF8 -ErrorAction Stop
+            if ($raw) {
+                $wsLoaded = $raw | ConvertFrom-Json -AsHashtable
+                foreach ($k in $wsLoaded.Keys) { $cfg[$k] = $wsLoaded[$k] }
+            }
+        } catch { Write-Verbose "LoadCfg: workspace config error — $($_.Exception.Message)" }
+    }
+
+    # Layer 3: environment variables (highest priority, override everything)
+    foreach ($envKey in $script:EnvVarMap.Keys) {
+        $envVal = [System.Environment]::GetEnvironmentVariable($envKey)
+        if ($envVal) { $cfg[$script:EnvVarMap[$envKey]] = $envVal }
+    }
+
     $script:CfgCache = $cfg
     $script:CfgDirty = $false
     return $cfg
@@ -184,23 +236,41 @@ function script:SaveCfg {
         Writes config.json atomically using a temp-file + rename pattern and an
         advisory .lock file to prevent concurrent overwrites.
     .NOTES
-        Acquires $script:CfgFile.lock (exclusive FileShare.None) before writing.
+        Acquires the target config file's .lock before writing.
         On lock timeout a Write-Warning is emitted and the write proceeds anyway so
         the caller is never left without a config. The temp file is always cleaned up
         even on error via try/finally.
+        Use -Scope Workspace to write to the workspace config (.pssnips/config.json in
+        the current directory, or the path set in $env:PSSNIPS_WORKSPACE).
     #>
-    param([hashtable]$Cfg)
-    $lockFile = "$script:CfgFile.lock"
+    param(
+        [hashtable]$Cfg,
+        [string]$Scope = 'User'
+    )
+    $targetFile = if ($Scope -eq 'Workspace') {
+        if (-not $script:WorkspaceCfgFile) {
+            Write-Warning "Workspace config path not initialised. Call script:InitEnv first."
+            return
+        }
+        $wsDir = Split-Path $script:WorkspaceCfgFile -Parent
+        if (-not (Test-Path $wsDir)) { New-Item -ItemType Directory -Path $wsDir -Force | Out-Null }
+        $script:WorkspaceCfgFile
+    } else {
+        $script:CfgFile
+    }
+    $lockFile = "$targetFile.lock"
     $lock = script:AcquireLock -LockFile $lockFile
     try {
-        $tmp = "$script:CfgFile.tmp"
+        $tmp = "$targetFile.tmp"
         $Cfg | ConvertTo-Json -Depth 5 | Set-Content -Path $tmp -Encoding UTF8
-        Move-Item -Path $tmp -Destination $script:CfgFile -Force
-        $script:CfgCache = $Cfg
-        $script:CfgDirty = $false
+        Move-Item -Path $tmp -Destination $targetFile -Force
+        if ($Scope -eq 'User') {
+            $script:CfgCache = $Cfg
+            $script:CfgDirty = $false
+        }
     } finally {
         script:ReleaseLock -Stream $lock -LockFile $lockFile
-        if (Test-Path "$script:CfgFile.tmp") { Remove-Item "$script:CfgFile.tmp" -ErrorAction SilentlyContinue }
+        if (Test-Path "$targetFile.tmp") { Remove-Item "$targetFile.tmp" -ErrorAction SilentlyContinue }
     }
 }
 
@@ -436,6 +506,11 @@ function script:WithIdxLock {
 
 function script:InitEnv {
     $script:FtsCacheFile = Join-Path $script:Home 'fts-cache.json'
+
+    # Resolve workspace config file path (env override or cwd/.pssnips/config.json)
+    $wsDir = if ($env:PSSNIPS_WORKSPACE) { $env:PSSNIPS_WORKSPACE } else { Join-Path (Get-Location) '.pssnips' }
+    $script:WorkspaceCfgFile = Join-Path $wsDir 'config.json'
+
     script:EnsureDirs
 
     # Clean up any stale .lock files left by a previous crashed session.
@@ -579,10 +654,26 @@ function Get-SnipConfig {
         preference. GitHub tokens are masked in the output, showing only the last
         four characters.
 
+        Configuration is resolved in priority order (highest first):
+          1. Environment variables  ($env:PSSNIPS_*)
+          2. Workspace config       (.pssnips/config.json in cwd, or $env:PSSNIPS_WORKSPACE)
+          3. User config            (~/.pssnips/config.json)
+          4. Module defaults
+
+    .PARAMETER ShowSources
+        When specified, displays a table showing where each value was resolved from
+        (Env / Workspace / User / Default) in addition to the value itself.
+
     .EXAMPLE
         Get-SnipConfig
 
         Displays the full configuration table in the terminal.
+
+    .EXAMPLE
+        Get-SnipConfig -ShowSources
+
+        Displays the configuration with a Source column indicating which layer each
+        value was resolved from.
 
     .EXAMPLE
         # Check which editor is configured before editing a snippet
@@ -600,20 +691,66 @@ function Get-SnipConfig {
         Use Set-SnipConfig to change individual settings.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [switch]$ShowSources
+    )
     script:InitEnv
     $cfg = script:LoadCfg
     Write-Host ""
     Write-Host "  PSSnips Configuration" -ForegroundColor Cyan
     Write-Host "  $('─' * 44)" -ForegroundColor DarkGray
-    foreach ($k in $cfg.Keys) {
-        $v = $cfg[$k]
-        if ($k -in 'GitHubToken','GitLabToken' -and $v) { $v = '[plain-text]' }
-        if ($k -in 'GitHubTokenSecure','GitLabTokenSecure' -and $v) { $v = '[DPAPI encrypted]' }
-        if ($k -eq 'BitbucketAppPassword' -and $v) { $v = '[set]' }
-        if ($v -is [array]) { $v = $v -join ', ' }
-        Write-Host ("  {0,-22}" -f $k) -ForegroundColor DarkCyan -NoNewline
-        Write-Host " $v"
+
+    if ($ShowSources) {
+        # Build per-key source map
+        $defKeys  = @{}; $script:Defaults.GetEnumerator() | ForEach-Object { $defKeys[$_.Key] = $true }
+        $userCfg  = @{}
+        if (Test-Path $script:CfgFile) {
+            try {
+                $raw = Get-Content $script:CfgFile -Raw -Encoding UTF8 -ErrorAction Stop
+                if ($raw) { ($raw | ConvertFrom-Json -AsHashtable).GetEnumerator() | ForEach-Object { $userCfg[$_.Key] = $true } }
+            } catch { Write-Verbose "Get-SnipConfig ShowSources: user config read error — $($_.Exception.Message)" }
+        }
+        $wsCfg = @{}
+        if ($script:WorkspaceCfgFile -and (Test-Path $script:WorkspaceCfgFile)) {
+            try {
+                $raw = Get-Content $script:WorkspaceCfgFile -Raw -Encoding UTF8 -ErrorAction Stop
+                if ($raw) { ($raw | ConvertFrom-Json -AsHashtable).GetEnumerator() | ForEach-Object { $wsCfg[$_.Key] = $true } }
+            } catch { Write-Verbose "Get-SnipConfig ShowSources: workspace config read error — $($_.Exception.Message)" }
+        }
+
+        Write-Host ("  {0,-22} {1,-30} {2}" -f 'Key', 'Value', 'Source') -ForegroundColor DarkGray
+        Write-Host ("  {0,-22} {1,-30} {2}" -f ('─' * 22), ('─' * 30), ('─' * 10)) -ForegroundColor DarkGray
+        foreach ($k in $cfg.Keys) {
+            $v = $cfg[$k]
+            if ($k -in 'GitHubToken','GitLabToken' -and $v) { $v = '[plain-text]' }
+            if ($k -in 'GitHubTokenSecure','GitLabTokenSecure' -and $v) { $v = '[DPAPI encrypted]' }
+            if ($k -eq 'BitbucketAppPassword' -and $v) { $v = '[set]' }
+            if ($v -is [array]) { $v = $v -join ', ' }
+            $envKey = ($script:EnvVarMap.GetEnumerator() | Where-Object { $_.Value -eq $k } | Select-Object -First 1)?.Key
+            $src = if ($envKey -and [System.Environment]::GetEnvironmentVariable($envKey)) { 'Env' }
+                   elseif ($wsCfg.ContainsKey($k))   { 'Workspace' }
+                   elseif ($userCfg.ContainsKey($k))  { 'User' }
+                   else                               { 'Default' }
+            $srcColor = switch ($src) {
+                'Env'       { 'Yellow' }
+                'Workspace' { 'Green' }
+                'User'      { 'Cyan' }
+                default     { 'DarkGray' }
+            }
+            Write-Host ("  {0,-22}" -f $k) -ForegroundColor DarkCyan -NoNewline
+            Write-Host (" {0,-30} " -f $v) -NoNewline
+            Write-Host $src -ForegroundColor $srcColor
+        }
+    } else {
+        foreach ($k in $cfg.Keys) {
+            $v = $cfg[$k]
+            if ($k -in 'GitHubToken','GitLabToken' -and $v) { $v = '[plain-text]' }
+            if ($k -in 'GitHubTokenSecure','GitLabTokenSecure' -and $v) { $v = '[DPAPI encrypted]' }
+            if ($k -eq 'BitbucketAppPassword' -and $v) { $v = '[set]' }
+            if ($v -is [array]) { $v = $v -join ', ' }
+            Write-Host ("  {0,-22}" -f $k) -ForegroundColor DarkCyan -NoNewline
+            Write-Host " $v"
+        }
     }
     Write-Host ""
 }
@@ -684,6 +821,15 @@ function Set-SnipConfig {
         When $true (the default), Remove-Snip prompts for confirmation before
         deleting. Set to $false to suppress the confirmation prompt globally. Optional.
 
+    .PARAMETER Scope
+        Determines which config file is written. Accepted values:
+          User       (default) — saves to ~/.pssnips/config.json. Applies to all
+                     sessions for the current user.
+          Workspace  — saves to .pssnips/config.json in the current directory (or the
+                     path set in $env:PSSNIPS_WORKSPACE). Workspace settings are
+                     project-specific and can be committed to source control.
+                     NEVER store secrets (tokens, passwords) in workspace config.
+
     .EXAMPLE
         Set-SnipConfig -Editor nvim
 
@@ -698,6 +844,12 @@ function Set-SnipConfig {
         Set-SnipConfig -GitHubToken 'ghp_abc123' -SecureStorage
 
         Saves the token encrypted with DPAPI (machine+user scoped).
+
+    .EXAMPLE
+        Set-SnipConfig -SnippetsDir 'C:\Projects\MySnips' -Scope Workspace
+
+        Saves a project-specific snippets directory to the workspace config so it
+        only applies when working in the current directory.
 
     .EXAMPLE
         Set-SnipConfig -DefaultLanguage py -ConfirmDelete $false
@@ -732,7 +884,8 @@ function Set-SnipConfig {
         [nullable[bool]]$ConfirmDelete,
         [ValidateNotNullOrEmpty()][string]$BitbucketUsername,
         [ValidateNotNullOrEmpty()][string]$BitbucketAppPassword,
-        [switch]$SecureStorage
+        [switch]$SecureStorage,
+        [ValidateSet('User','Workspace')][string]$Scope = 'User'
     )
     script:InitEnv
     $cfg = script:LoadCfg
@@ -771,7 +924,7 @@ function Set-SnipConfig {
     if ($null -ne $ConfirmDelete) { $cfg['ConfirmDelete']     = $ConfirmDelete        }
     if ($BitbucketUsername)    { $cfg['BitbucketUsername']    = $BitbucketUsername    }
     if ($BitbucketAppPassword) { $cfg['BitbucketAppPassword'] = $BitbucketAppPassword }
-    script:SaveCfg -Cfg $cfg
+    script:SaveCfg -Cfg $cfg -Scope $Scope
     script:Out-OK "Configuration saved."
 }
 
@@ -852,18 +1005,36 @@ function Get-Snip {
         None. This function does not accept pipeline input.
 
     .OUTPUTS
-        System.Management.Automation.PSCustomObject[]
-        Each object has Name, Lang, Gist, Tags, Modified, Desc, Runs, and Pinned
-        properties. Returns nothing (displays an info message) when no snippets match.
+        PSSnips.SnippetInfo
+        Returns typed [PSSnips.SnippetInfo] objects with the following properties:
+          Name         [string]   – snippet key/filename stem
+          Language     [string]   – file extension (e.g. ps1, py, js)
+          Lang         [string]   – alias for Language (backwards compatibility)
+          Gist         [string]   – 'linked', '[shared]', or ''
+          GistUrl      [string]   – full GitHub Gist URL when linked, else ''
+          Source       [string]   – 'local' or '[shared]'
+          Tags         [string]   – comma-joined tag list for display
+          TagList      [string[]] – individual tags array (use -contains for filtering)
+          Modified     [string]   – formatted date string (yyyy-MM-dd)
+          ModifiedDate [datetime] – typed datetime for sorting/filtering, or $null
+          Desc         [string]   – description
+          Description  [string]   – alias for Desc (for discoverability)
+          Runs         [int]      – run count
+          Pinned       [bool]     – whether snippet is pinned
+          ContentHash  [string]   – SHA hash of snippet content from index
+
+        Returns nothing (displays an info message) when no snippets match.
 
     .NOTES
         The @($m.tags) wrapping inside the filter logic normalises tags to an array
         even when the JSON deserializer returns a bare string for a single-element
         array (a known PowerShell 5.1 ConvertFrom-Json quirk).
         Run history fields (runCount, lastRun) are written to the index by Invoke-Snip.
+        The PSTypeName 'PSSnips.SnippetInfo' activates the TableControl view defined
+        in PSSnips.Format.ps1xml, replacing the old Write-Host table output.
     #>
     [CmdletBinding()]
-    [OutputType([PSCustomObject[]])]
+    [OutputType('PSSnips.SnippetInfo')]
     param(
         [Parameter(Position=0)][string]$Filter   = '',
         [string]$Tag      = '',
@@ -941,37 +1112,40 @@ function Get-Snip {
     })
     $finalNames = @($pinnedNames) + @($nonPinnedNames)
 
-    # Phase 4: Build output objects
+    # Phase 4: Build typed output objects
     $rows = @(foreach ($name in $finalNames) {
-        $m        = $idx.snippets[$name]
-        $pinned   = $m.ContainsKey('pinned') -and $m['pinned'] -eq $true
-        $runCount = if ($m.ContainsKey('runCount')) { [int]$m['runCount'] } else { 0 }
-        [pscustomobject]@{
-            Name     = $name
-            Lang     = $m.language
-            Gist     = if ($Shared) { '[shared]' } elseif ($m.gistId) {'linked'} else {''}
-            Source   = if ($Shared) { '[shared]' } else { 'local' }
-            Tags     = @($m.tags) -join ', '
-            Modified = if ($m.modified) { [datetime]$m.modified | Get-Date -Format 'yyyy-MM-dd' } else { '' }
-            Desc     = if ($m.description) { $m.description } else { '' }
-            Runs     = $runCount
-            Pinned   = $pinned
+        $m            = $idx.snippets[$name]
+        $pinned       = $m.ContainsKey('pinned') -and $m['pinned'] -eq $true
+        $runCount     = if ($m.ContainsKey('runCount')) { [int]$m['runCount'] } else { 0 }
+        $tagArray     = [string[]]@($m.tags | Where-Object { $_ })
+        $modifiedDate = if ($m.modified) { [datetime]$m.modified } else { $null }
+        $modifiedDisp = if ($modifiedDate) { $modifiedDate | Get-Date -Format 'yyyy-MM-dd' } else { '' }
+        $gistDisplay  = if ($Shared) { '[shared]' } elseif ($m.gistId) { 'linked' } else { '' }
+        $gistUrl      = if (-not $Shared -and $m.gistUrl) { $m.gistUrl } else { '' }
+        $descValue    = if ($m.description) { $m.description } else { '' }
+        $hashValue    = if ($m.ContainsKey('contentHash')) { $m['contentHash'] } else { '' }
+        $obj = [pscustomobject]@{
+            PSTypeName   = 'PSSnips.SnippetInfo'
+            Name         = [string]$name
+            Language     = [string]$m.language
+            Lang         = [string]$m.language
+            Gist         = [string]$gistDisplay
+            GistUrl      = [string]$gistUrl
+            Source       = [string](if ($Shared) { '[shared]' } else { 'local' })
+            Tags         = [string]($tagArray -join ', ')
+            TagList      = $tagArray
+            Modified     = [string]$modifiedDisp
+            ModifiedDate = $modifiedDate
+            Desc         = [string]$descValue
+            Description  = [string]$descValue
+            Runs         = [int]$runCount
+            Pinned       = [bool]$pinned
+            ContentHash  = [string]$hashValue
         }
+        $obj
     })
 
     if (-not $rows) { script:Out-Info "No snippets match that filter."; return }
-
-    Write-Host ""
-    Write-Host ("  {0,-2} {1,-23} {2,-5} {3,-7} {4,-22} {5,-5} {6}" -f '', 'NAME', 'LANG', 'GIST', 'TAGS', 'RUNS', 'MODIFIED') -ForegroundColor DarkCyan
-    Write-Host "  $('─' * 80)" -ForegroundColor DarkGray
-    foreach ($r in $rows) {
-        $c        = script:LangColor -ext $r.Lang
-        $pin      = if ($r.Pinned) { '★' } else { ' ' }
-        $runsDisp = if ($r.Runs -gt 0) { "$($r.Runs)" } else { '' }
-        Write-Host ("  {0,-2} {1,-23} " -f $pin, $r.Name) -ForegroundColor $c -NoNewline
-        Write-Host ("{0,-5} {1,-7} {2,-22} {3,-5} {4}" -f $r.Lang, $r.Gist, $r.Tags, $runsDisp, $r.Modified) -ForegroundColor Gray
-    }
-    Write-Host ""
     return $rows
 }
 
@@ -1210,6 +1384,12 @@ function New-Snip {
     script:UpdateFts -Name $Name
     script:Out-OK "Snippet '$Name' ($langExt) created."
     script:Write-AuditLog -Operation 'Create' -SnippetName $Name
+    script:Invoke-SnipEvent -EventName 'SnipCreated' -Data @{
+        Name        = $Name
+        Language    = $langExt
+        Description = $Description
+        Tags        = $Tags
+    }
 
     if (-not $Content) { Edit-Snip -Name $Name -Editor $Editor }
 }
@@ -1410,6 +1590,7 @@ function Remove-Snip {
     }
     if ($Force -or $PSCmdlet.ShouldProcess($Name, 'Delete snippet')) {
         script:Write-AuditLog -Operation 'Delete' -SnippetName $Name
+        script:Invoke-SnipEvent -EventName 'SnipDeleted' -Data @{ Name = $Name }
         $p = script:FindFile -Name $Name
         if ($p -and (Test-Path $p)) { Remove-Item $p -Force }
         $idx.snippets.Remove($Name)
@@ -1475,8 +1656,12 @@ function Edit-Snip {
     script:Out-Info "Opening '$Name' in $ed ..."
     & $ed $path
     script:Write-AuditLog -Operation 'Edit' -SnippetName $Name
+    script:Invoke-SnipEvent -EventName 'SnipEdited' -Data @{
+        Name     = $Name
+        FilePath = $path
+    }
 
-    # Touch the modified timestamp and recompute content hash; auto-sync CBH for PS1 files
+    # Touch the modified timestampand recompute content hash; auto-sync CBH for PS1 files
     $idx = script:LoadIdx
     if ($idx.snippets.ContainsKey($Name)) {
         $idx.snippets[$Name]['modified'] = Get-Date -Format 'o'
@@ -1761,6 +1946,7 @@ function Invoke-Snip {
         return
     }
 
+    $snipStart = [datetime]::UtcNow
     try {
         switch ($ext) {
             { $_ -in 'ps1','psm1' } { & $runPath @ArgumentList }
@@ -1842,6 +2028,11 @@ function Invoke-Snip {
                 script:Out-Warn "No built-in runner for '.$ext'. Opening with default app ..."
                 Start-Process $runPath
             }
+        }
+        script:Invoke-SnipEvent -EventName 'SnipExecuted' -Data @{
+            Name     = $Name
+            Language = $ext
+            Duration = ([datetime]::UtcNow - $snipStart).TotalSeconds
         }
     } finally {
         if ($tmpFile -and (Test-Path $tmpFile)) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
@@ -2892,6 +3083,11 @@ function Export-Gist {
         script:SaveIdx -Idx $idx
         script:Out-OK "Gist $(if ($meta.gistId) {'updated'} else {'created'}): $($result.html_url)"
         script:Write-AuditLog -Operation 'Export' -SnippetName $Name
+        script:Invoke-SnipEvent -EventName 'SnipPublished' -Data @{
+            Name     = $Name
+            Provider = 'github'
+            Url      = $result.html_url
+        }
     } catch { Write-Error "Failed to export gist: $_" -ErrorAction Continue }
 }
 
@@ -3285,12 +3481,13 @@ function Export-GitLabSnip {
         script:SaveIdx -Idx $idx
         script:Out-OK "GitLab snippet $(if ($glId) {'updated'} else {'created'}): $($result.web_url)"
         script:Write-AuditLog -Operation 'Export' -SnippetName $Name
+        script:Invoke-SnipEvent -EventName 'SnipPublished' -Data @{
+            Name     = $Name
+            Provider = 'gitlab'
+            Url      = if ($result.web_url) { $result.web_url } else { '' }
+        }
     } catch { Write-Error "Failed to export to GitLab: $_" -ErrorAction Continue }
 }
-
-#endregion
-
-#region ─── Bitbucket Snippets ──────────────────────────────────────────────
 
 function Get-BitbucketSnipList {
     <#
@@ -3564,6 +3761,11 @@ function Export-BitbucketSnip {
         $idx.snippets[$Name]['bitbucketUrl'] = if ($result.links.html.href) { $result.links.html.href } else { '' }
         script:SaveIdx -Idx $idx
         script:Out-OK "Bitbucket snippet created: $($result.links.html.href)"
+        script:Invoke-SnipEvent -EventName 'SnipPublished' -Data @{
+            Name     = $Name
+            Provider = 'bitbucket'
+            Url      = ''
+        }
     } catch {
         script:Out-Err "Failed to export '$Name' to Bitbucket: $_"
     } finally {
@@ -6280,6 +6482,137 @@ function Sync-SnipMetadata {
     script:Out-Info "Sync complete — $updated updated, $skipped skipped."
 }
 
+function Register-SnipEvent {
+    <#
+    .SYNOPSIS
+        Registers a script block handler for a PSSnips lifecycle event.
+
+    .DESCRIPTION
+        Attaches a script block to a named PSSnips lifecycle event. The handler
+        is invoked automatically whenever the event is raised by the module.
+        Multiple handlers can be registered for the same event; each receives a
+        hashtable $Data argument with event-specific fields.
+
+        Supported events and their $Data keys:
+          SnipCreated   — Name, Language, Description, Tags
+          SnipEdited    — Name, FilePath
+          SnipDeleted   — Name
+          SnipExecuted  — Name, Language, Duration (seconds as [double])
+          SnipPublished — Name, Provider (github|gitlab|bitbucket), Url
+
+        Register handlers in your $PROFILE to persist across sessions.
+
+    .PARAMETER EventName
+        Mandatory. The name of the event to subscribe to. Must be one of:
+        SnipCreated, SnipEdited, SnipDeleted, SnipExecuted, SnipPublished.
+
+    .PARAMETER Handler
+        Mandatory. A script block that accepts a single [hashtable] parameter.
+
+    .PARAMETER Id
+        Optional. A unique identifier for this handler registration. Defaults to
+        a new GUID. Use a stable Id in $PROFILE registrations so that re-sourcing
+        the profile does not create duplicate handlers.
+
+    .EXAMPLE
+        Register-SnipEvent -Event SnipExecuted -Handler {
+            param($e)
+            "[$(Get-Date -f 'HH:mm:ss')] Ran '$($e.Name)' in $($e.Duration)s" |
+                Add-Content ~/.pssnips/perf.log
+        }
+
+        Logs execution time for every snippet run.
+
+    .EXAMPLE
+        Register-SnipEvent -Event SnipCreated -Id 'my-slack-hook' -Handler {
+            param($e)
+            $body = @{ text = "New snippet: $($e.Name) [$($e.Language)]" } | ConvertTo-Json
+            Invoke-RestMethod https://hooks.slack.com/... -Method Post -Body $body -ContentType 'application/json'
+        }
+
+        Posts a Slack notification whenever a snippet is created.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.String
+        Returns the registration Id (useful for later Unregister-SnipEvent calls).
+
+    .NOTES
+        Handlers run synchronously in the caller's thread. Keep handlers fast;
+        long-running operations should use Start-Job or runspaces internally.
+        Handler errors are caught and written to Verbose — they never propagate
+        to the caller.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory, HelpMessage = 'Event name to subscribe to')]
+        [ValidateSet('SnipCreated','SnipEdited','SnipDeleted','SnipExecuted','SnipPublished')]
+        [string]$EventName,
+
+        [Parameter(Mandatory, HelpMessage = 'Script block handler — receives a [hashtable] $Data argument')]
+        [scriptblock]$Handler,
+
+        [string]$Id = ([guid]::NewGuid().ToString())
+    )
+    if (-not $script:EventRegistry.ContainsKey($EventName)) {
+        $script:EventRegistry[$EventName] = @{}
+    }
+    $script:EventRegistry[$EventName][$Id] = $Handler
+    return $Id
+}
+
+function Unregister-SnipEvent {
+    <#
+    .SYNOPSIS
+        Removes a previously registered PSSnips event handler.
+
+    .DESCRIPTION
+        Removes the handler identified by -Id from the named event's registry.
+        Use the Id returned by Register-SnipEvent (or the stable Id you supplied)
+        to target the specific registration. If the Id is not found the function
+        returns silently.
+
+    .PARAMETER EventName
+        Mandatory. The event name whose handler should be removed.
+
+    .PARAMETER Id
+        Mandatory. The registration Id returned by Register-SnipEvent, or the
+        stable Id supplied when the handler was registered.
+
+    .EXAMPLE
+        $regId = Register-SnipEvent -Event SnipCreated -Handler { param($e) Write-Host $e.Name }
+        Unregister-SnipEvent -Event SnipCreated -Id $regId
+
+        Registers then immediately removes a handler.
+
+    .INPUTS
+        None.
+
+    .OUTPUTS
+        None.
+
+    .NOTES
+        Removing a non-existent Id is a silent no-op.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions',
+        '', Justification = 'Modifies in-memory event registry only; no persistent state change.')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, HelpMessage = 'Event name')]
+        [ValidateSet('SnipCreated','SnipEdited','SnipDeleted','SnipExecuted','SnipPublished')]
+        [string]$EventName,
+
+        [Parameter(Mandatory, HelpMessage = 'Registration Id to remove')]
+        [string]$Id
+    )
+    if ($script:EventRegistry.ContainsKey($EventName)) {
+        $script:EventRegistry[$EventName].Remove($Id)
+    }
+}
+
 #endregion
 
 Export-ModuleMember -Function @(
@@ -6302,5 +6635,6 @@ Export-ModuleMember -Function @(
     'New-SnipFromTemplate', 'Get-SnipTemplate',
     'New-SnipSchedule', 'Get-SnipSchedule', 'Remove-SnipSchedule',
     'Initialize-SnipPreCommitHook',
-    'Sync-SnipMetadata'
+    'Sync-SnipMetadata',
+    'Register-SnipEvent', 'Unregister-SnipEvent'
 ) -Alias 'snip'
