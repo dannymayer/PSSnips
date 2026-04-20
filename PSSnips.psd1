@@ -1,11 +1,11 @@
 @{
     RootModule        = 'PSSnips.psm1'
-    ModuleVersion     = '1.1.1'
+    ModuleVersion     = '1.2.0'
     GUID              = 'f3a7c2b1-84e9-4d56-a021-6c3e9f182b47'
     Author            = 'MayerMediaCo'
     CompanyName       = 'MayerMediaCo'
     Copyright         = 'Copyright (c) 2026 MayerMediaCo. Licensed under the MIT License.'
-    Description       = 'A terminal-first PowerShell snippet manager with GitHub Gist and GitLab integration. Store, search, tag, pin, version, edit, and run local code snippets. Features shared team storage, backup/restore, PSScriptAnalyzer lint, template variables, snippet chaining, and an interactive TUI. Requires PowerShell 7.0 or later.'
+    Description       = 'A terminal-first PowerShell snippet manager with GitHub Gist, GitLab, and Bitbucket integration. Store, search, tag, pin, version, edit, and run local code snippets. Features WSL2/PSRemoting/SQL execution, scheduled tasks, snippet templates, ratings, audit logging, shared team storage, backup/restore, VS Code sync, fuzzy finder, Windows Terminal integration, and an interactive TUI. Requires PowerShell 7.0 or later.'
     PowerShellVersion = '7.0'
     CompatiblePSEditions = @('Core')
 
@@ -18,12 +18,18 @@
         'Export-SnipCollection', 'Import-SnipCollection',
         'Get-GistList', 'Get-Gist', 'Import-Gist', 'Export-Gist', 'Invoke-Gist', 'Sync-Gist',
         'Get-GitLabSnipList', 'Get-GitLabSnip', 'Import-GitLabSnip', 'Export-GitLabSnip',
+        'Get-BitbucketSnipList', 'Import-BitbucketSnip', 'Export-BitbucketSnip', 'Sync-BitbucketSnips',
         'Publish-Snip', 'Sync-SharedSnips',
         'Install-PSSnips', 'Uninstall-PSSnips',
         'Start-SnipManager',
         'Invoke-SnipCLI',
         'Get-StaleSnip', 'Get-SnipStats', 'Export-VSCodeSnips', 'Invoke-FuzzySnip',
-        'Add-SnipTerminalProfile'
+        'Add-SnipTerminalProfile',
+        'Get-SnipAuditLog',
+        'Set-SnipRating', 'Add-SnipComment',
+        'New-SnipFromTemplate', 'Get-SnipTemplate',
+        'New-SnipSchedule', 'Get-SnipSchedule', 'Remove-SnipSchedule',
+        'Initialize-SnipPreCommitHook'
     )
 
     AliasesToExport   = @('snip')
@@ -33,10 +39,11 @@
     PrivateData = @{
         PSData = @{
             Tags             = @(
-                'snippets', 'snippet-manager', 'gist', 'github', 'github-gist', 'gitlab',
+                'snippets', 'snippet-manager', 'gist', 'github', 'github-gist', 'gitlab', 'bitbucket',
                 'productivity', 'terminal', 'windows', 'cli', 'code-snippets',
                 'devtools', 'developer-tools', 'powershell', 'tui',
-                'code-reuse', 'automation', 'scripting', 'version-control', 'team'
+                'code-reuse', 'automation', 'scripting', 'version-control', 'team',
+                'wsl', 'remoting', 'sql', 'audit', 'templates', 'scheduling'
             )
             LicenseUri       = 'https://github.com/dannymayer/PSSnips/blob/main/LICENSE'
             ProjectUri       = 'https://github.com/dannymayer/PSSnips'

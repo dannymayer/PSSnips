@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] — 2026-04-20
+
+### Added
+
+- **Bitbucket Snippets provider** — `Get-BitbucketSnipList`, `Import-BitbucketSnip`,
+  `Export-BitbucketSnip`, `Sync-BitbucketSnips` via Bitbucket Cloud API v2.0.
+  Configure with `Set-SnipConfig -BitbucketUsername` / `-BitbucketAppPassword` or
+  `$env:BITBUCKET_USERNAME` / `$env:BITBUCKET_APP_PASSWORD`.
+- **WSL2 execution** — `.sh` snippets now prefer WSL2 with automatic Windows→WSL
+  mount path translation (`C:\...` → `/mnt/c/...`) and `chmod +x` before run.
+  Falls back to Git Bash, then WSL1.
+- **PSRemoting** — `Invoke-Snip -ComputerName <string[]> [-Credential <PSCredential>]`
+  runs `.ps1` snippets on remote machines via `Invoke-Command`.
+- **SQL runner** — `Invoke-Snip myquery.sql -ConnectionString '...'` executes against
+  SQL Server (prefers `dbatools`, falls back to `System.Data.SqlClient`). Results
+  formatted as table; DML shows rows-affected.
+- **Audit logging** — `script:Write-AuditLog` records Create/Edit/Delete/Execute/
+  Import/Export operations as NDJSON to `~/.pssnips/audit.log` (10 MB rotation).
+  `Get-SnipAuditLog [-Last <int>] [-Operation <string>] [-SnippetName <string>]`
+  queries the log.
+- **Ratings & Comments** — `Set-SnipRating -Name <n> -Stars <1-5>` stores a rating
+  in the index. `Add-SnipComment -Name <n> -Text <string>` appends timestamped
+  comments to `~/.pssnips/comments/<name>.json`. `Show-Snip -Comments` displays them.
+- **Snippet Templates** — `New-SnipFromTemplate -Template <name> -Name <name>
+  [-Variables <hashtable>]` scaffolds snippets from `{{VARIABLE}}` templates.
+  Built-ins: `azure-function`, `rest-call`, `k8s-job`. Custom templates in
+  `~/.pssnips/templates/`. `Get-SnipTemplate` lists all available templates.
+- **Scheduled execution** — `New-SnipSchedule -Name <n> -Schedule Daily|Weekly|
+  Hourly|OnLogon|OnStartup` registers a Windows Scheduled Task.
+  `Get-SnipSchedule` / `Remove-SnipSchedule` for management.
+- **Pre-commit hook** — `Initialize-SnipPreCommitHook [-RepoPath <path>] [-WhatIf]`
+  installs a git pre-commit hook that runs `Test-Snip` on all staged `.ps1` files.
+
+---
+
 ## [1.1.1] — 2026-04-20
 
 ### Added

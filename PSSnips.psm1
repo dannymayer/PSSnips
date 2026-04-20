@@ -32,17 +32,19 @@ $script:SnipDir   = Join-Path $script:Home 'snippets'
 $script:LockTimeoutMs = 3000
 
 $script:Defaults = [ordered]@{
-    SnippetsDir     = $script:SnipDir
-    Editor          = 'edit'
-    EditorFallbacks = @('nvim','code','notepad')
-    GitHubToken     = ''
-    GitHubUsername  = ''
-    DefaultLanguage = 'ps1'
-    ConfirmDelete   = $true
-    MaxHistory        = 10
-    GitLabToken       = ''
-    GitLabUrl         = 'https://gitlab.com'
-    SharedSnippetsDir = ''
+    SnippetsDir        = $script:SnipDir
+    Editor             = 'edit'
+    EditorFallbacks    = @('nvim','code','notepad')
+    GitHubToken        = ''
+    GitHubUsername     = ''
+    DefaultLanguage    = 'ps1'
+    ConfirmDelete      = $true
+    MaxHistory         = 10
+    GitLabToken        = ''
+    GitLabUrl          = 'https://gitlab.com'
+    SharedSnippetsDir  = ''
+    BitbucketUsername  = ''
+    BitbucketAppPassword = ''
 }
 
 # Map extension → color for display
@@ -270,6 +272,22 @@ function script:GetGitLabToken {
     return $cfg.GitLabToken
 }
 
+function script:GetBitbucketCreds {
+    $cfg  = script:LoadCfg
+    $user = if ($env:BITBUCKET_USERNAME)     { $env:BITBUCKET_USERNAME }
+            elseif ($cfg.ContainsKey('BitbucketUsername')    -and $cfg.BitbucketUsername)    { $cfg.BitbucketUsername }
+            else { $null }
+    $pass = if ($env:BITBUCKET_APP_PASSWORD) { $env:BITBUCKET_APP_PASSWORD }
+            elseif ($cfg.ContainsKey('BitbucketAppPassword') -and $cfg.BitbucketAppPassword) { $cfg.BitbucketAppPassword }
+            else { $null }
+    if (-not $user -or -not $pass) {
+        script:Out-Warn 'Bitbucket credentials not set. Run: Set-SnipConfig -BitbucketUsername <user> -BitbucketAppPassword <app-pwd>  (or set $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD)'
+        return $null
+    }
+    $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
+    return [PSCredential]::new($user, $securePass)
+}
+
 function script:CallGitHub {
     param(
         [string]$Endpoint,
@@ -442,6 +460,31 @@ function script:RemoveFts {
     $script:FtsCache = $fts
 }
 
+function script:Write-AuditLog {
+    param(
+        [string]$Operation,
+        [string]$SnippetName = '',
+        [hashtable]$Extra    = @{}
+    )
+    try {
+        $auditFile = Join-Path $script:Home 'audit.log'
+        if ((Test-Path $auditFile) -and (Get-Item $auditFile -ErrorAction SilentlyContinue).Length -gt 10MB) {
+            $rotated = "$auditFile.1"
+            if (Test-Path $rotated) { Remove-Item $rotated -Force -ErrorAction SilentlyContinue }
+            Rename-Item -Path $auditFile -NewName 'audit.log.1' -Force -ErrorAction SilentlyContinue
+        }
+        $entry = [ordered]@{
+            timestamp   = (Get-Date -Format 'o')
+            operation   = $Operation
+            snippetName = $SnippetName
+            user        = $env:USERNAME
+        }
+        foreach ($k in $Extra.Keys) { $entry[$k] = $Extra[$k] }
+        $line = $entry | ConvertTo-Json -Compress
+        Add-Content -Path $auditFile -Value $line -Encoding UTF8 -ErrorAction Stop
+    } catch { }
+}
+
 function script:GetSharedDir {
     $cfg = script:LoadCfg
     $dir = if ($cfg.ContainsKey('SharedSnippetsDir')) { $cfg['SharedSnippetsDir'] } else { '' }
@@ -524,6 +567,7 @@ function Get-SnipConfig {
         $v = $cfg[$k]
         if ($k -in 'GitHubToken','GitLabToken' -and $v) { $v = '[plain-text]' }
         if ($k -in 'GitHubTokenSecure','GitLabTokenSecure' -and $v) { $v = '[DPAPI encrypted]' }
+        if ($k -eq 'BitbucketAppPassword' -and $v) { $v = '[set]' }
         if ($v -is [array]) { $v = $v -join ', ' }
         Write-Host ("  {0,-22}" -f $k) -ForegroundColor DarkCyan -NoNewline
         Write-Host " $v"
@@ -562,6 +606,17 @@ function Set-SnipConfig {
           $env:GITLAB_TOKEN  >  GitLabTokenSecure (DPAPI)  >  GitLabToken (plain-text)
         WARNING: tokens written to config.json are not encrypted by default.
         Consider using $env:GITLAB_TOKEN for improved security.
+
+    .PARAMETER BitbucketUsername
+        Your Bitbucket username. Optional. Used together with BitbucketAppPassword for
+        Basic Auth when calling the Bitbucket Snippets API.
+        Falls back to $env:BITBUCKET_USERNAME at runtime.
+
+    .PARAMETER BitbucketAppPassword
+        A Bitbucket app password with Snippets read/write scope. Optional.
+        Required for all Bitbucket Snippet operations. Falls back to
+        $env:BITBUCKET_APP_PASSWORD at runtime.
+        WARNING: stored in plain text in config.json; prefer the environment variable.
 
     .PARAMETER SecureStorage
         When specified, tokens are encrypted with Windows DPAPI before being written
@@ -626,6 +681,8 @@ function Set-SnipConfig {
         [ValidateNotNullOrEmpty()][string]$SnippetsDir,
         [ValidateNotNullOrEmpty()][string]$DefaultLanguage,
         [nullable[bool]]$ConfirmDelete,
+        [ValidateNotNullOrEmpty()][string]$BitbucketUsername,
+        [ValidateNotNullOrEmpty()][string]$BitbucketAppPassword,
         [switch]$SecureStorage
     )
     script:InitEnv
@@ -659,10 +716,12 @@ function Set-SnipConfig {
             $cfg['GitLabToken'] = $GitLabToken
         }
     }
-    if ($GitHubUsername)  { $cfg['GitHubUsername']  = $GitHubUsername  }
-    if ($SnippetsDir)     { $cfg['SnippetsDir']     = $SnippetsDir     }
-    if ($DefaultLanguage) { $cfg['DefaultLanguage'] = $DefaultLanguage }
-    if ($null -ne $ConfirmDelete) { $cfg['ConfirmDelete'] = $ConfirmDelete }
+    if ($GitHubUsername)       { $cfg['GitHubUsername']       = $GitHubUsername       }
+    if ($SnippetsDir)          { $cfg['SnippetsDir']          = $SnippetsDir          }
+    if ($DefaultLanguage)      { $cfg['DefaultLanguage']      = $DefaultLanguage      }
+    if ($null -ne $ConfirmDelete) { $cfg['ConfirmDelete']     = $ConfirmDelete        }
+    if ($BitbucketUsername)    { $cfg['BitbucketUsername']    = $BitbucketUsername    }
+    if ($BitbucketAppPassword) { $cfg['BitbucketAppPassword'] = $BitbucketAppPassword }
     script:SaveCfg -Cfg $cfg
     script:Out-OK "Configuration saved."
 }
@@ -890,6 +949,11 @@ function Show-Snip {
         Optional switch. When specified, returns the snippet content as a string
         instead of writing to the host. The decorative header is not printed.
 
+    .PARAMETER Comments
+        Optional switch. When specified, displays user comments for the snippet
+        below the content. Comments are read from ~/.pssnips/comments/<name>.json.
+        Has no effect when -PassThru is specified. Use Add-SnipComment to add comments.
+
     .EXAMPLE
         Show-Snip my-snippet
 
@@ -924,7 +988,8 @@ function Show-Snip {
         [ValidateNotNullOrEmpty()]
         [string]$Name,
         [switch]$Raw,
-        [switch]$PassThru
+        [switch]$PassThru,
+        [switch]$Comments
     )
     script:InitEnv
     $path = script:FindFile -Name $Name
@@ -946,6 +1011,25 @@ function Show-Snip {
         }
     }
     Write-Host $content
+
+    if ($Comments -and -not $PassThru) {
+        $commentsDir  = Join-Path $script:Home 'comments'
+        $commentsFile = Join-Path $commentsDir "$Name.json"
+        if (Test-Path $commentsFile) {
+            try {
+                $commentList = @(Get-Content $commentsFile -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json)
+                if ($commentList.Count -gt 0) {
+                    Write-Host '  ── Comments ──' -ForegroundColor DarkCyan
+                    foreach ($cm in $commentList) {
+                        $ts = try { [datetime]$cm.timestamp | Get-Date -Format 'yyyy-MM-dd HH:mm' } catch { $cm.timestamp }
+                        Write-Host ("  [{0}] {1}: {2}" -f $ts, $cm.author, $cm.text) -ForegroundColor Gray
+                    }
+                    Write-Host ''
+                }
+            } catch { }
+        }
+    }
+
     if (-not $Raw) { Write-Host "" }
 }
 
@@ -1076,6 +1160,7 @@ function New-Snip {
     script:SaveIdx -Idx $idx
     script:UpdateFts -Name $Name
     script:Out-OK "Snippet '$Name' ($langExt) created."
+    script:Write-AuditLog -Operation 'Create' -SnippetName $Name
 
     if (-not $Content) { Edit-Snip -Name $Name -Editor $Editor }
 }
@@ -1262,6 +1347,7 @@ function Remove-Snip {
         if ($yn -notin 'y','Y') { script:Out-Info "Cancelled."; return }
     }
     if ($Force -or $PSCmdlet.ShouldProcess($Name, 'Delete snippet')) {
+        script:Write-AuditLog -Operation 'Delete' -SnippetName $Name
         $p = script:FindFile -Name $Name
         if ($p -and (Test-Path $p)) { Remove-Item $p -Force }
         $idx.snippets.Remove($Name)
@@ -1326,6 +1412,7 @@ function Edit-Snip {
     $ed = script:GetEditor -Override $Editor
     script:Out-Info "Opening '$Name' in $ed ..."
     & $ed $path
+    script:Write-AuditLog -Operation 'Edit' -SnippetName $Name
 
     # Touch the modified timestamp and recompute content hash
     $idx = script:LoadIdx
@@ -1349,7 +1436,8 @@ function Invoke-Snip {
         Single mode (-Name): resolves the snippet file, substitutes any {{PLACEHOLDER}}
         template variables in the content, then invokes the appropriate language runner.
         Runner selection: .ps1/.psm1 (dot-source), .py (python/python3), .js (node),
-        .bat/.cmd (cmd /c), .sh (bash/wsl), .rb (ruby), .go (go run), other (Start-Process).
+        .bat/.cmd (cmd /c), .sh (bash/wsl2/wsl), .rb (ruby), .go (go run),
+        .sql (dbatools/SqlClient), other (Start-Process).
 
         Chain mode (-Pipeline): runs multiple snippets sequentially. Prints a header,
         executes each snippet by name in order, and prints a summary. By default stops
@@ -1357,6 +1445,9 @@ function Invoke-Snip {
 
         After each single execution the snippet's runCount is incremented and lastRun
         is set in index.json. A failure to update run history never prevents output.
+
+        PSRemoting (-ComputerName): for .ps1/.psm1 snippets, executes the snippet
+        remotely on one or more computers via Invoke-Command. Requires WinRM/PSRemoting.
 
     .PARAMETER Name
         Mandatory (Single set). The name of the snippet to execute.
@@ -1377,6 +1468,20 @@ function Invoke-Snip {
         {{VARIABLE_NAME}} placeholders in the snippet body without prompting.
         Keys must match placeholder names exactly (case-insensitive match supported).
         Any placeholder NOT found in this hashtable will be prompted interactively.
+
+    .PARAMETER ComputerName
+        Optional (Single set). One or more remote computer names. When provided, the
+        snippet (must be .ps1 or .psm1) is executed remotely via Invoke-Command using
+        PSRemoting/WinRM. Variable substitution is applied before remote execution.
+
+    .PARAMETER Credential
+        Optional (Single set). PSCredential for remote authentication when using
+        -ComputerName. If omitted, the current user's credentials are used.
+
+    .PARAMETER ConnectionString
+        Optional (Single set). ADO.NET connection string for executing .sql snippets.
+        Example: 'Server=.;Database=master;Integrated Security=True'
+        If omitted when running a .sql snippet, a helpful error is shown.
 
     .EXAMPLE
         Invoke-Snip deploy-script
@@ -1403,6 +1508,21 @@ function Invoke-Snip {
 
         Runs all three snippets, reporting errors but not stopping.
 
+    .EXAMPLE
+        Invoke-Snip my-script -ComputerName 'server01','server02'
+
+        Runs 'my-script.ps1' on server01 and server02 via PSRemoting.
+
+    .EXAMPLE
+        Invoke-Snip my-script -ComputerName 'server01' -Credential (Get-Credential)
+
+        Runs 'my-script.ps1' remotely with explicit credentials.
+
+    .EXAMPLE
+        Invoke-Snip my-query -ConnectionString 'Server=.;Database=master;Integrated Security=True'
+
+        Runs a .sql snippet against the specified SQL Server database.
+
     .INPUTS
         None. This function does not accept pipeline input.
 
@@ -1415,7 +1535,9 @@ function Invoke-Snip {
         digits, and underscores). Matching is case-insensitive for the -Variables
         hashtable lookup. If any substitutions are made, the snippet runs from a
         temporary file that is deleted in a finally block.
-        For .sh snippets on Windows, bash is sought first; then wsl bash.
+        For .sh snippets on Windows, WSL2 bash is preferred when available; path
+        translation (C:\...) → /mnt/c/... is performed automatically. Falls back
+        to native bash (Git Bash) then WSL1 bash.
         Run history (runCount, lastRun) is updated in index.json after execution.
     #>
     [CmdletBinding(DefaultParameterSetName='Single')]
@@ -1435,7 +1557,16 @@ function Invoke-Snip {
         [switch]$ContinueOnError,
 
         [Parameter(ParameterSetName='Single')]
-        [hashtable]$Variables = @{}
+        [hashtable]$Variables = @{},
+
+        [Parameter(ParameterSetName='Single')]
+        [string[]]$ComputerName = @(),
+
+        [Parameter(ParameterSetName='Single')]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(ParameterSetName='Single')]
+        [string]$ConnectionString = ''
     )
 
     # ── Chain / Pipeline mode ────────────────────────────────────────────────
@@ -1520,6 +1651,40 @@ function Invoke-Snip {
 
     script:Out-Info "Running '$Name' [$ext] ..."
     Write-Host ""
+    script:Write-AuditLog -Operation 'Execute' -SnippetName $Name
+
+    # ── PSRemoting short-circuit ─────────────────────────────────────────────
+    if ($ComputerName.Count -gt 0) {
+        if ($ext -notin 'ps1','psm1') {
+            Write-Error "PSRemoting (-ComputerName) only supports .ps1/.psm1 snippets. Got .$ext." -ErrorAction Continue
+            return
+        }
+        $remoteContent = if ($tmpFile) { Get-Content $tmpFile -Raw -Encoding UTF8 } else { $content }
+        $sb = [scriptblock]::Create($remoteContent)
+        script:Out-Info ("Targeting computers: {0}" -f ($ComputerName -join ', '))
+        Write-Host ""
+        try {
+            $icmParams = @{
+                ComputerName = $ComputerName
+                ScriptBlock  = $sb
+                ArgumentList = $ArgumentList
+            }
+            if ($PSBoundParameters.ContainsKey('Credential')) { $icmParams['Credential'] = $Credential }
+            Invoke-Command @icmParams
+        } finally {
+            if ($tmpFile -and (Test-Path $tmpFile)) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
+        }
+        try {
+            $idxH = script:LoadIdx
+            if ($idxH.snippets.ContainsKey($Name)) {
+                $rc = if ($idxH.snippets[$Name].ContainsKey('runCount')) { [int]$idxH.snippets[$Name]['runCount'] } else { 0 }
+                $idxH.snippets[$Name]['runCount'] = $rc + 1
+                $idxH.snippets[$Name]['lastRun']  = Get-Date -Format 'o'
+                script:SaveIdx -Idx $idxH
+            }
+        } catch { Write-Verbose "Run-history update failed (non-fatal): $_" }
+        return
+    }
 
     try {
         switch ($ext) {
@@ -1533,15 +1698,70 @@ function Invoke-Snip {
             }
             { $_ -in 'bat','cmd' } { & cmd /c $runPath @ArgumentList }
             'sh' {
-                if     (Get-Command bash -EA 0) { & bash $runPath @ArgumentList }
-                elseif (Get-Command wsl  -EA 0) { & wsl  bash $runPath @ArgumentList }
-                else { Write-Error "Bash not found. Install WSL or Git Bash." -ErrorAction Continue }
+                # Translate a Windows path to a WSL mount path (e.g. C:\foo\bar → /mnt/c/foo/bar)
+                $wslPath = $runPath -replace '\\', '/'
+                if ($wslPath -match '^([A-Za-z]):(.*)') {
+                    $wslPath = '/mnt/' + $Matches[1].ToLower() + $Matches[2]
+                }
+                $wsl2Available = $false
+                if (Get-Command wsl -EA 0) {
+                    $wslStatus = & wsl --status 2>&1
+                    $wsl2Available = ($wslStatus -join '') -match 'WSL\s*2|Default\s+Version:\s*2'
+                    if (-not $wsl2Available) {
+                        # Fallback check: wsl --list --verbose shows Version column
+                        $wslList = & wsl --list --verbose 2>&1
+                        $wsl2Available = ($wslList -join '') -match '\s2\s'
+                    }
+                }
+                if ($wsl2Available) {
+                    & wsl chmod +x $wslPath 2>$null
+                    & wsl bash $wslPath @ArgumentList
+                } elseif (Get-Command bash -EA 0) {
+                    & bash $runPath @ArgumentList
+                } elseif (Get-Command wsl -EA 0) {
+                    & wsl chmod +x $wslPath 2>$null
+                    & wsl bash $wslPath @ArgumentList
+                } else {
+                    Write-Error "Bash not found. Install WSL or Git Bash." -ErrorAction Continue
+                }
             }
             'rb' {
                 if (Get-Command ruby -EA 0) { & ruby $runPath @ArgumentList } else { Write-Error "Ruby not found in PATH." -ErrorAction Continue }
             }
             'go' {
                 if (Get-Command go -EA 0) { & go run $runPath @ArgumentList } else { Write-Error "Go not found in PATH." -ErrorAction Continue }
+            }
+            'sql' {
+                if (-not $ConnectionString) {
+                    Write-Error "SQL snippet requires -ConnectionString. Example: Invoke-Snip myquery.sql -ConnectionString 'Server=.;Database=master;Integrated Security=True'" -ErrorAction Continue
+                    return
+                }
+                $sqlContent = Get-Content $runPath -Raw -Encoding UTF8
+                if (Get-Command Invoke-DbaQuery -EA 0) {
+                    $results = Invoke-DbaQuery -SqlInstance $ConnectionString -Query $sqlContent
+                    if ($null -ne $results) { $results | Format-Table -AutoSize }
+                } else {
+                    $conn = [System.Data.SqlClient.SqlConnection]::new($ConnectionString)
+                    try {
+                        $conn.Open()
+                        $cmd = $conn.CreateCommand()
+                        $cmd.CommandText = $sqlContent
+                        $cmd.CommandTimeout = 30
+                        $isSelect = $sqlContent.TrimStart() -imatch '^\s*(SELECT|WITH|EXEC(UTE)?)'
+                        if ($isSelect) {
+                            $adapter = [System.Data.SqlClient.SqlDataAdapter]::new($cmd)
+                            $ds = [System.Data.DataSet]::new()
+                            $adapter.Fill($ds) | Out-Null
+                            if ($ds.Tables.Count -gt 0) { $ds.Tables[0] | Format-Table -AutoSize }
+                        } else {
+                            $rowsAffected = $cmd.ExecuteNonQuery()
+                            script:Out-OK "$rowsAffected row(s) affected."
+                        }
+                    } finally {
+                        $conn.Close()
+                        $conn.Dispose()
+                    }
+                }
             }
             default {
                 script:Out-Warn "No built-in runner for '.$ext'. Opening with default app ..."
@@ -2514,6 +2734,7 @@ function Import-Gist {
             gistId = $GistId; gistUrl = $gist.html_url
         }
         script:Out-OK "Imported '$snipName' ($ext)."
+        script:Write-AuditLog -Operation 'Import' -SnippetName $snipName
     }
     script:SaveIdx -Idx $idx
 }
@@ -2595,6 +2816,7 @@ function Export-Gist {
         $idx.snippets[$Name]['gistUrl'] = $result.html_url
         script:SaveIdx -Idx $idx
         script:Out-OK "Gist $(if ($meta.gistId) {'updated'} else {'created'}): $($result.html_url)"
+        script:Write-AuditLog -Operation 'Export' -SnippetName $Name
     } catch { Write-Error "Failed to export gist: $_" -ErrorAction Continue }
 }
 
@@ -2922,6 +3144,7 @@ function Import-GitLabSnip {
     }
     script:SaveIdx -Idx $idx
     script:Out-OK "Imported GitLab snippet '$snipName' ($ext)."
+    script:Write-AuditLog -Operation 'Import' -SnippetName $snipName
 }
 
 function Export-GitLabSnip {
@@ -2986,7 +3209,360 @@ function Export-GitLabSnip {
         $idx.snippets[$Name]['gitlabUrl'] = if ($result.web_url) { $result.web_url } else { '' }
         script:SaveIdx -Idx $idx
         script:Out-OK "GitLab snippet $(if ($glId) {'updated'} else {'created'}): $($result.web_url)"
+        script:Write-AuditLog -Operation 'Export' -SnippetName $Name
     } catch { Write-Error "Failed to export to GitLab: $_" -ErrorAction Continue }
+}
+
+#endregion
+
+#region ─── Bitbucket Snippets ──────────────────────────────────────────────
+
+function Get-BitbucketSnipList {
+    <#
+    .SYNOPSIS
+        Lists Bitbucket snippets for the authenticated user or a specific workspace.
+    .DESCRIPTION
+        Calls the Bitbucket Snippets API (GET /2.0/snippets/{workspace} or
+        /2.0/snippets) and displays a formatted table of snippets showing Id, Title,
+        Created, Updated, and IsPrivate columns.
+    .PARAMETER Workspace
+        Optional. The Bitbucket workspace slug to list snippets from. Defaults to
+        the authenticated user's workspace (their username).
+    .PARAMETER Role
+        Optional. Filter by role. Accepted values: 'owner', 'contributor', 'member'.
+        Maps to the Bitbucket API 'role' query parameter.
+    .EXAMPLE
+        Get-BitbucketSnipList
+    .EXAMPLE
+        Get-BitbucketSnipList -Workspace myteam -Role owner
+    .INPUTS
+        None.
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject[]
+    .NOTES
+        Requires BitbucketUsername + BitbucketAppPassword config or
+        $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [string]$Workspace = '',
+        [ValidateSet('owner','contributor','member','')]
+        [string]$Role      = ''
+    )
+    script:InitEnv
+    $cred = script:GetBitbucketCreds
+    if (-not $cred) { return }
+
+    $base      = 'https://api.bitbucket.org/2.0'
+    $workspace = if ($Workspace) { $Workspace } else { $cred.UserName }
+    $query     = if ($Role) { "?role=$Role" } else { '' }
+    $uri       = "$base/snippets/$workspace$query"
+
+    $snips = [System.Collections.Generic.List[object]]::new()
+    try {
+        do {
+            $page = Invoke-RestMethod -Uri $uri -Method GET -Credential $cred `
+                        -Headers @{ 'User-Agent' = 'PSSnips/1.0' } -ErrorAction Stop
+            foreach ($v in $page.values) { $snips.Add($v) }
+            $uri = if ($page.next) { $page.next } else { $null }
+        } while ($uri)
+    } catch {
+        script:Out-Err "Bitbucket API error: $_"
+        return
+    }
+
+    if ($snips.Count -eq 0) { script:Out-Info 'No Bitbucket snippets found.'; return }
+
+    Write-Host ''
+    Write-Host ("  {0,-12} {1,-40} {2,-22} {3,-22} {4}" -f 'ID','TITLE','CREATED','UPDATED','PRIVATE') -ForegroundColor DarkCyan
+    Write-Host "  $('─' * 105)" -ForegroundColor DarkGray
+    foreach ($s in $snips) {
+        $created  = if ($s.created_on)  { [datetime]$s.created_on  | Get-Date -Format 'yyyy-MM-dd HH:mm' } else { '' }
+        $updated  = if ($s.updated_on)  { [datetime]$s.updated_on  | Get-Date -Format 'yyyy-MM-dd HH:mm' } else { '' }
+        $isPriv   = if ($s.is_private)  { 'Yes' } else { 'No' }
+        Write-Host ("  {0,-12} {1,-40} {2,-22} {3,-22} {4}" -f $s.id, $s.title, $created, $updated, $isPriv) -ForegroundColor Gray
+    }
+    Write-Host ''
+
+    return @($snips | ForEach-Object {
+        [PSCustomObject]@{
+            Id         = $_.id
+            Title      = $_.title
+            Scm        = if ($_.scm) { $_.scm } else { 'git' }
+            IsPrivate  = $_.is_private
+            CreatedOn  = $_.created_on
+            UpdatedOn  = $_.updated_on
+            Links      = $_.links
+        }
+    })
+}
+
+function Import-BitbucketSnip {
+    <#
+    .SYNOPSIS
+        Downloads a Bitbucket snippet and saves it as one or more local snippets.
+    .DESCRIPTION
+        Fetches the snippet metadata from GET /2.0/snippets/{workspace}/{encoded_id}
+        and then retrieves each file's content via the file self-link. If the snippet
+        contains multiple files each is saved as a separate local snippet named
+        {Name}-{filename} (or {title}-{filename} when -Name is not provided).
+        Each file is registered via New-Snip with -Content and optional -Force.
+    .PARAMETER Id
+        Mandatory. The short alphanumeric Bitbucket snippet ID (e.g., 'xKjP9').
+    .PARAMETER Workspace
+        Optional. The Bitbucket workspace slug. Defaults to the authenticated user's
+        username.
+    .PARAMETER Name
+        Optional. Override for the local snippet base name. When the snippet has
+        multiple files, each file is saved as {Name}-{filename}.
+    .PARAMETER Force
+        Optional switch. Overwrites existing local snippets with the same name.
+    .EXAMPLE
+        Import-BitbucketSnip -Id xKjP9
+    .EXAMPLE
+        Import-BitbucketSnip -Id xKjP9 -Workspace myteam -Name my-local -Force
+    .INPUTS
+        None.
+    .OUTPUTS
+        None.
+    .NOTES
+        Requires BitbucketUsername + BitbucketAppPassword config or
+        $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD.
+        The bitbucketId is stored in the index for future sync.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position=0, HelpMessage='Bitbucket snippet ID (e.g. xKjP9)')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Id,
+        [string]$Workspace = '',
+        [string]$Name      = '',
+        [switch]$Force
+    )
+    script:InitEnv
+    $cred      = script:GetBitbucketCreds
+    if (-not $cred) { return }
+
+    $base      = 'https://api.bitbucket.org/2.0'
+    $workspace = if ($Workspace) { $Workspace } else { $cred.UserName }
+    $encoded   = [uri]::EscapeDataString($Id)
+
+    try {
+        $meta = Invoke-RestMethod -Uri "$base/snippets/$workspace/$encoded" `
+                    -Method GET -Credential $cred `
+                    -Headers @{ 'User-Agent' = 'PSSnips/1.0' } -ErrorAction Stop
+    } catch {
+        script:Out-Err "Bitbucket API error fetching snippet '$Id': $_"
+        return
+    }
+
+    $baseName = if ($Name) { $Name } else {
+        $meta.title -replace '[^\w\-]', '-' -replace '-{2,}', '-' -replace '^-|-$', ''
+    }
+    if (-not $baseName) { $baseName = $Id }
+
+    $fileNames = @($meta.files.PSObject.Properties.Name)
+    if ($fileNames.Count -eq 0) {
+        script:Out-Warn "Snippet '$Id' has no files."
+        return
+    }
+
+    foreach ($fileName in $fileNames) {
+        $fileLink = $meta.files.$fileName.links.self.href
+        try {
+            $rawContent = Invoke-RestMethod -Uri $fileLink -Method GET -Credential $cred `
+                              -Headers @{ 'User-Agent' = 'PSSnips/1.0' } -ErrorAction Stop
+        } catch {
+            script:Out-Err "Failed to fetch file '$fileName' for snippet '$Id': $_"
+            continue
+        }
+
+        $ext      = [System.IO.Path]::GetExtension($fileName).TrimStart('.')
+        if (-not $ext) { $ext = 'txt' }
+        $fileBase = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
+
+        $snipName = if ($fileNames.Count -eq 1) {
+            $baseName
+        } else {
+            "$baseName-$fileBase"
+        }
+
+        $params = @{
+            Name     = $snipName
+            Language = $ext
+            Content  = if ($rawContent -is [string]) { $rawContent } else { $rawContent | Out-String }
+            Force    = $Force
+        }
+        New-Snip @params
+
+        # Stamp the bitbucketId into the index entry
+        $idx = script:LoadIdx
+        if ($idx.snippets.ContainsKey($snipName)) {
+            $idx.snippets[$snipName]['bitbucketId']  = $Id
+            $idx.snippets[$snipName]['bitbucketUrl'] = if ($meta.links.html.href) { $meta.links.html.href } else { '' }
+            script:SaveIdx -Idx $idx
+        }
+        script:Out-OK "Imported Bitbucket snippet '$snipName' ($ext)."
+    }
+}
+
+function Export-BitbucketSnip {
+    <#
+    .SYNOPSIS
+        Exports a local snippet to Bitbucket as a new snippet.
+    .DESCRIPTION
+        Reads the local snippet content and POSTs it to
+        POST /2.0/snippets/{workspace} as multipart/form-data. On success the new
+        snippet URL is displayed and the bitbucketId / bitbucketUrl are saved to the
+        local index. A temporary staging file is created inside the PSSnips home
+        directory and removed immediately after the upload.
+    .PARAMETER Name
+        Mandatory. The local snippet name to upload.
+    .PARAMETER Title
+        Optional. The title to use on Bitbucket. Defaults to the snippet name.
+    .PARAMETER IsPrivate
+        Optional switch. When specified the snippet is created as private (not public).
+    .EXAMPLE
+        Export-BitbucketSnip my-snippet
+    .EXAMPLE
+        Export-BitbucketSnip my-snippet -Title 'Deploy script' -IsPrivate
+    .INPUTS
+        None.
+    .OUTPUTS
+        None.
+    .NOTES
+        Requires BitbucketUsername + BitbucketAppPassword config or
+        $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD.
+        If the snippet already has a bitbucketId it is reported as already exported;
+        use the Bitbucket UI to update existing snippets or delete and re-export.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position=0, HelpMessage='Local snippet name to export')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+        [string]$Title = '',
+        [switch]$IsPrivate
+    )
+    script:InitEnv
+    $cred = script:GetBitbucketCreds
+    if (-not $cred) { return }
+
+    $idx = script:LoadIdx
+    if (-not $idx.snippets.ContainsKey($Name)) {
+        Write-Error "Snippet '$Name' not found." -ErrorAction Continue
+        return
+    }
+
+    $meta    = $idx.snippets[$Name]
+    $path    = script:FindFile -Name $Name
+    if (-not $path -or -not (Test-Path $path)) {
+        Write-Error "Snippet file for '$Name' not found." -ErrorAction Continue
+        return
+    }
+
+    $content      = Get-Content $path -Raw -Encoding UTF8
+    $fn           = "$Name.$($meta.language)"
+    $effectTitle  = if ($Title) { $Title } else { $Name }
+    $base         = 'https://api.bitbucket.org/2.0'
+    $workspace    = $cred.UserName
+
+    # Write content to a staging file named after the snippet so Bitbucket
+    # receives the correct filename in the multipart Content-Disposition header.
+    $stagingFile  = Join-Path $script:Home "._export_$fn"
+    try {
+        Set-Content $stagingFile -Value $content -Encoding UTF8 -NoNewline
+
+        $form = @{
+            title      = $effectTitle
+            is_private = if ($IsPrivate) { 'true' } else { 'false' }
+            $fn        = Get-Item $stagingFile
+        }
+
+        $result = Invoke-RestMethod -Uri "$base/snippets/$workspace" `
+                      -Method POST -Credential $cred `
+                      -Headers @{ 'User-Agent' = 'PSSnips/1.0' } `
+                      -Form $form -ErrorAction Stop
+
+        $idx.snippets[$Name]['bitbucketId']  = $result.id
+        $idx.snippets[$Name]['bitbucketUrl'] = if ($result.links.html.href) { $result.links.html.href } else { '' }
+        script:SaveIdx -Idx $idx
+        script:Out-OK "Bitbucket snippet created: $($result.links.html.href)"
+    } catch {
+        script:Out-Err "Failed to export '$Name' to Bitbucket: $_"
+    } finally {
+        if (Test-Path $stagingFile) { Remove-Item $stagingFile -Force }
+    }
+}
+
+function Sync-BitbucketSnips {
+    <#
+    .SYNOPSIS
+        Synchronises local snippets with Bitbucket in one or both directions.
+    .DESCRIPTION
+        Pull downloads all Bitbucket snippets found via Get-BitbucketSnipList and
+        imports each with Import-BitbucketSnip. Push uploads every local snippet
+        that does not yet have a bitbucketId via Export-BitbucketSnip. Both runs
+        Pull then Push in sequence.
+    .PARAMETER Workspace
+        Optional. The Bitbucket workspace slug. Defaults to the authenticated user's
+        username.
+    .PARAMETER Direction
+        Optional. 'Pull' (default), 'Push', or 'Both'.
+    .PARAMETER Force
+        Optional switch. Passed through to Import-BitbucketSnip to allow overwriting
+        existing local snippets during a Pull.
+    .EXAMPLE
+        Sync-BitbucketSnips
+    .EXAMPLE
+        Sync-BitbucketSnips -Direction Both -Force
+    .EXAMPLE
+        Sync-BitbucketSnips -Direction Push -Workspace myteam
+    .INPUTS
+        None.
+    .OUTPUTS
+        None.
+    .NOTES
+        Requires BitbucketUsername + BitbucketAppPassword config or
+        $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Workspace = '',
+        [ValidateSet('Pull','Push','Both')]
+        [string]$Direction = 'Pull',
+        [switch]$Force
+    )
+    script:InitEnv
+    $cred = script:GetBitbucketCreds
+    if (-not $cred) { return }
+
+    $ws = if ($Workspace) { $Workspace } else { $cred.UserName }
+
+    if ($Direction -in 'Pull','Both') {
+        script:Out-Info 'Pulling snippets from Bitbucket…'
+        $remote = Get-BitbucketSnipList -Workspace $ws
+        if ($remote) {
+            foreach ($r in $remote) {
+                Import-BitbucketSnip -Id $r.Id -Workspace $ws -Force:$Force
+            }
+        }
+    }
+
+    if ($Direction -in 'Push','Both') {
+        script:Out-Info 'Pushing local snippets to Bitbucket…'
+        $idx = script:LoadIdx
+        foreach ($snipName in $idx.snippets.Keys) {
+            $entry = $idx.snippets[$snipName]
+            $hasBbId = $entry.ContainsKey('bitbucketId') -and $entry.bitbucketId
+            if (-not $hasBbId) {
+                Export-BitbucketSnip -Name $snipName
+            }
+        }
+    }
+
+    script:Out-OK 'Bitbucket sync complete.'
 }
 
 #endregion
@@ -4610,6 +5186,906 @@ function Add-SnipTerminalProfile {
     return $settingsPath
 }
 
+function Get-SnipAuditLog {
+    <#
+    .SYNOPSIS
+        Reads and filters the PSSnips audit log.
+
+    .DESCRIPTION
+        Reads ~/.pssnips/audit.log, parses each NDJSON line, and returns matching
+        entries newest-first. Use -Last to limit the number of results, -Operation to
+        filter by operation type (Create, Edit, Delete, Execute, Export, Import), and
+        -SnippetName to filter by snippet name. Results are displayed as a formatted
+        table showing Timestamp, Operation, SnippetName, and User.
+
+    .PARAMETER Last
+        Maximum number of entries to return, newest first. Default: 50.
+
+    .PARAMETER Operation
+        Optional. Filter entries to a specific operation type:
+        Create, Edit, Delete, Execute, Export, or Import.
+
+    .PARAMETER SnippetName
+        Optional. Filter entries to a specific snippet name.
+
+    .EXAMPLE
+        Get-SnipAuditLog
+
+        Displays the last 50 audit log entries.
+
+    .EXAMPLE
+        Get-SnipAuditLog -Operation Execute -Last 10
+
+        Displays the last 10 execution events.
+
+    .EXAMPLE
+        Get-SnipAuditLog -SnippetName deploy-script
+
+        Displays all audit events for the 'deploy-script' snippet.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject[]
+        Each object has: Timestamp, Operation, SnippetName, User.
+
+    .NOTES
+        The audit log is written to ~/.pssnips/audit.log in NDJSON format.
+        The log is automatically rotated when it exceeds 10 MB (renamed to audit.log.1).
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$Last = 50,
+        [string]$Operation   = '',
+        [string]$SnippetName = ''
+    )
+    script:InitEnv
+    $auditFile = Join-Path $script:Home 'audit.log'
+    if (-not (Test-Path $auditFile)) {
+        script:Out-Info 'No audit log found.'
+        return @()
+    }
+
+    $lines   = @(Get-Content $auditFile -Encoding UTF8 -ErrorAction SilentlyContinue)
+    $entries = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    foreach ($line in $lines) {
+        if (-not $line.Trim()) { continue }
+        try {
+            $obj = $line | ConvertFrom-Json
+            if ($Operation   -and $obj.operation   -ne $Operation)   { continue }
+            if ($SnippetName -and $obj.snippetName  -ne $SnippetName) { continue }
+            $entries.Add([pscustomobject]@{
+                Timestamp   = $obj.timestamp
+                Operation   = $obj.operation
+                SnippetName = $obj.snippetName
+                User        = $obj.user
+            })
+        } catch { continue }
+    }
+
+    $result = @($entries | Select-Object -Last $Last | Sort-Object Timestamp -Descending)
+
+    if ($result.Count -eq 0) {
+        script:Out-Info 'No audit log entries found.'
+        return @()
+    }
+
+    Write-Host ''
+    Write-Host '  PSSnips Audit Log' -ForegroundColor Cyan
+    Write-Host "  $('─' * 80)" -ForegroundColor DarkGray
+    Write-Host ("  {0,-28} {1,-10} {2,-25} {3}" -f 'TIMESTAMP', 'OPERATION', 'SNIPPET', 'USER') -ForegroundColor DarkCyan
+    Write-Host "  $('─' * 80)" -ForegroundColor DarkGray
+    foreach ($r in $result) {
+        $ts = try { [datetime]$r.Timestamp | Get-Date -Format 'yyyy-MM-dd HH:mm:ss' } catch { $r.Timestamp }
+        Write-Host ("  {0,-28} {1,-10} {2,-25} {3}" -f $ts, $r.Operation, $r.SnippetName, $r.User) -ForegroundColor Gray
+    }
+    Write-Host ''
+    return $result
+}
+
+function Set-SnipRating {
+    <#
+    .SYNOPSIS
+        Sets a star rating (1–5) on a snippet.
+
+    .DESCRIPTION
+        Updates the snippet's index entry with a numeric rating (1–5 stars) and a
+        'ratedAt' timestamp. The rating is stored in index.json alongside the snippet
+        metadata.
+
+    .PARAMETER Name
+        Mandatory. The name of the snippet to rate.
+
+    .PARAMETER Stars
+        Mandatory. The star rating, between 1 and 5 inclusive.
+
+    .EXAMPLE
+        Set-SnipRating -Name deploy-script -Stars 5
+
+        Rates the 'deploy-script' snippet as 5 stars.
+
+    .EXAMPLE
+        Set-SnipRating azure-login -Stars 4
+
+        Rates 'azure-login' as 4 stars.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        None. Writes a confirmation message to the host.
+
+    .NOTES
+        Ratings are stored in index.json alongside the snippet metadata.
+        The 'ratedAt' timestamp uses ISO 8601 format.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position=0, HelpMessage='Snippet name to rate')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+        [Parameter(Mandatory, Position=1, HelpMessage='Star rating 1-5')]
+        [ValidateRange(1, 5)]
+        [int]$Stars
+    )
+    script:InitEnv
+    $idx = script:LoadIdx
+    if (-not $idx.snippets.ContainsKey($Name)) {
+        Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return
+    }
+    try {
+        $idx.snippets[$Name]['rating']  = $Stars
+        $idx.snippets[$Name]['ratedAt'] = Get-Date -Format 'o'
+        script:SaveIdx -Idx $idx
+        script:Out-OK "Snippet '$Name' rated $Stars star$(if ($Stars -ne 1) {'s'})."
+    } catch {
+        script:Out-Err "Failed to save rating: $_"
+    }
+}
+
+function Add-SnipComment {
+    <#
+    .SYNOPSIS
+        Appends a comment to a snippet's comment log.
+
+    .DESCRIPTION
+        Adds a timestamped comment to ~/.pssnips/comments/<name>.json. The file is a
+        JSON array; a new entry is appended with each call. Each comment includes a
+        timestamp (ISO 8601), the current user's name, and the comment text. Use
+        Show-Snip -Comments to display comments alongside the snippet content.
+
+    .PARAMETER Name
+        Mandatory. The name of the snippet to comment on.
+
+    .PARAMETER Text
+        Mandatory. The comment text to append.
+
+    .EXAMPLE
+        Add-SnipComment -Name deploy-script -Text 'Tested on prod 2024-01-15 — works.'
+
+        Appends a comment to the 'deploy-script' snippet.
+
+    .EXAMPLE
+        Add-SnipComment azure-login 'Remember to refresh token monthly'
+
+        Shorthand positional form.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        None. Writes a confirmation message to the host.
+
+    .NOTES
+        Comments are stored in ~/.pssnips/comments/<name>.json as a JSON array.
+        The directory is created automatically if it does not exist.
+        Use Show-Snip -Comments to view comments alongside snippet content.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position=0, HelpMessage='Snippet name to comment on')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+        [Parameter(Mandatory, Position=1, HelpMessage='Comment text')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Text
+    )
+    script:InitEnv
+    $idx = script:LoadIdx
+    if (-not $idx.snippets.ContainsKey($Name)) {
+        Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return
+    }
+    try {
+        $commentsDir  = Join-Path $script:Home 'comments'
+        if (-not (Test-Path $commentsDir)) { New-Item -ItemType Directory -Path $commentsDir -Force | Out-Null }
+        $commentsFile = Join-Path $commentsDir "$Name.json"
+        $existing     = if (Test-Path $commentsFile) {
+            try { @(Get-Content $commentsFile -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json) } catch { @() }
+        } else { @() }
+        $newComment = [ordered]@{
+            timestamp = (Get-Date -Format 'o')
+            author    = $env:USERNAME
+            text      = $Text
+        }
+        $updated = @($existing) + @($newComment)
+        $updated | ConvertTo-Json -Depth 5 | Set-Content $commentsFile -Encoding UTF8
+        script:Out-OK "Comment added to '$Name'."
+    } catch {
+        script:Out-Err "Failed to add comment: $_"
+    }
+}
+
+function New-SnipFromTemplate {
+    <#
+    .SYNOPSIS
+        Creates a new snippet from a named template with variable substitution.
+
+    .DESCRIPTION
+        Resolves a template by name, first checking ~/.pssnips/templates/ for custom
+        templates, then falling back to built-in templates. Fills {{VARIABLE}}
+        placeholders from the -Variables hashtable; any remaining placeholders are
+        prompted interactively. Saves the result as a new snippet via New-Snip.
+
+        Built-in templates:
+          azure-function  PowerShell Azure Function boilerplate
+                          Variables: FUNCTION_NAME, HTTP_METHOD
+          rest-call       Invoke-RestMethod template
+                          Variables: URL, METHOD, BODY
+          k8s-job         Kubernetes Job manifest (text/YAML)
+                          Variables: JOB_NAME, IMAGE
+
+        Custom templates are stored in ~/.pssnips/templates/ as plain-text files with
+        {{VARIABLE}} placeholders. The file base name is the template name.
+
+    .PARAMETER Template
+        Mandatory. The name of the template to use (e.g., 'azure-function').
+
+    .PARAMETER Name
+        Mandatory. The name for the new snippet to create.
+
+    .PARAMETER Variables
+        Optional. A hashtable of placeholder values (keys are case-insensitive).
+        Any placeholder not found here is prompted interactively.
+
+    .PARAMETER Force
+        Optional switch. Overwrites an existing snippet with the same name.
+
+    .EXAMPLE
+        New-SnipFromTemplate -Template azure-function -Name my-func `
+            -Variables @{ FUNCTION_NAME='MyFunc'; HTTP_METHOD='GET' }
+
+        Creates 'my-func' from the azure-function template.
+
+    .EXAMPLE
+        New-SnipFromTemplate rest-call my-api
+
+        Creates a snippet from the rest-call template, prompting for URL, METHOD, BODY.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        None. Delegates to New-Snip which writes a confirmation message.
+
+    .NOTES
+        Placeholder syntax: {{VARIABLE_NAME}} — uppercase letters, digits, underscores.
+        Custom templates override built-in templates of the same name.
+        Use Get-SnipTemplate to list all available templates.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position=0, HelpMessage='Template name')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Template,
+        [Parameter(Mandatory, Position=1, HelpMessage='New snippet name')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+        [hashtable]$Variables = @{},
+        [switch]$Force
+    )
+    script:InitEnv
+
+    # ── Built-in template content (single-quoted here-strings, no variable expansion) ──
+    $azFuncContent = @'
+using namespace System.Net
+
+param($Request, $TriggerMetadata)
+
+# Azure Function: {{FUNCTION_NAME}}
+# HTTP Method: {{HTTP_METHOD}}
+
+$name = $Request.Query.Name
+if (-not $name) { $name = $Request.Body.Name }
+
+if ($name) {
+    $status = [HttpStatusCode]::OK
+    $body   = "Hello, $name. Function {{FUNCTION_NAME}} executed successfully."
+} else {
+    $status = [HttpStatusCode]::BadRequest
+    $body   = 'Pass a name in the query string or request body.'
+}
+
+Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    StatusCode = $status
+    Body       = $body
+})
+'@
+
+    $restContent = @'
+# REST Call to {{URL}}
+# Method: {{METHOD}}
+
+$params = @{
+    Uri     = '{{URL}}'
+    Method  = '{{METHOD}}'
+    Headers = @{ 'Content-Type' = 'application/json' }
+}
+
+$body = '{{BODY}}'
+if ($body -and $body -ne '{{BODY}}') { $params['Body'] = $body }
+
+try {
+    $response = Invoke-RestMethod @params -ErrorAction Stop
+    $response | ConvertTo-Json -Depth 10
+} catch {
+    Write-Error "Request failed: $_"
+}
+'@
+
+    $k8sContent = @'
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{JOB_NAME}}
+spec:
+  template:
+    spec:
+      containers:
+        - name: {{JOB_NAME}}
+          image: {{IMAGE}}
+          imagePullPolicy: IfNotPresent
+      restartPolicy: Never
+  backoffLimit: 4
+'@
+
+    $builtinTemplates = @{
+        'azure-function' = @{ extension = 'ps1'; content = $azFuncContent  }
+        'rest-call'      = @{ extension = 'ps1'; content = $restContent     }
+        'k8s-job'        = @{ extension = 'txt'; content = $k8sContent      }
+    }
+
+    # ── Resolve template ──────────────────────────────────────────────────────
+    $templateContent = $null
+    $templateExt     = 'ps1'
+    $customDir       = Join-Path $script:Home 'templates'
+
+    if (Test-Path $customDir) {
+        $customFile = @(Get-ChildItem $customDir -Filter "$Template.*" -File -ErrorAction SilentlyContinue) | Select-Object -First 1
+        if ($customFile) {
+            $templateContent = Get-Content $customFile.FullName -Raw -Encoding UTF8
+            $templateExt     = $customFile.Extension.TrimStart('.')
+        }
+    }
+
+    if (-not $templateContent) {
+        if (-not $builtinTemplates.ContainsKey($Template)) {
+            Write-Error "Template '$Template' not found. Use Get-SnipTemplate to list available templates." -ErrorAction Continue
+            return
+        }
+        $tpl             = $builtinTemplates[$Template]
+        $templateContent = $tpl.content
+        $templateExt     = $tpl.extension
+    }
+
+    # ── Fill placeholders ─────────────────────────────────────────────────────
+    $placeholders = @([regex]::Matches($templateContent, '\{\{([A-Z0-9_]+)\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) |
+        ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+
+    $resolved = @{}
+    foreach ($k in $Variables.Keys) { $resolved[$k.ToUpper()] = $Variables[$k] }
+    foreach ($ph in $placeholders) {
+        if (-not $resolved.ContainsKey($ph)) {
+            $resolved[$ph] = Read-Host "  Value for {{$ph}}"
+        }
+    }
+
+    $filled = $templateContent
+    foreach ($ph in $placeholders) {
+        $filled = $filled -replace [regex]::Escape("{{$ph}}"), $resolved[$ph]
+    }
+
+    New-Snip -Name $Name -Language $templateExt -Content $filled -Force:$Force
+}
+
+function Get-SnipTemplate {
+    <#
+    .SYNOPSIS
+        Lists all available snippet templates (built-in and custom).
+
+    .DESCRIPTION
+        Displays templates from two sources:
+          Built-in  — three templates embedded in the module: azure-function,
+                      rest-call, and k8s-job.
+          Custom    — any files stored in ~/.pssnips/templates/.
+        For each template, shows its name, source (builtin/custom), extension, and a
+        comma-separated list of {{VARIABLE}} placeholders it contains.
+
+    .EXAMPLE
+        Get-SnipTemplate
+
+        Lists all available templates with their placeholder variables.
+
+    .EXAMPLE
+        $templates = Get-SnipTemplate
+        $templates | Where-Object Source -eq 'custom'
+
+        Returns only custom templates for further processing.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject[]
+        Each object has: Name, Source, Extension, Variables.
+
+    .NOTES
+        Custom templates are stored in ~/.pssnips/templates/.
+        Custom templates override built-in templates of the same name.
+        Built-in templates: azure-function, rest-call, k8s-job.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param()
+    script:InitEnv
+
+    $builtinDefs = @{
+        'azure-function' = @{ ext = 'ps1'; vars = @('FUNCTION_NAME', 'HTTP_METHOD') }
+        'rest-call'      = @{ ext = 'ps1'; vars = @('URL', 'METHOD', 'BODY') }
+        'k8s-job'        = @{ ext = 'txt'; vars = @('JOB_NAME', 'IMAGE') }
+    }
+
+    $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    $customDir = Join-Path $script:Home 'templates'
+    if (Test-Path $customDir) {
+        foreach ($f in @(Get-ChildItem $customDir -File -ErrorAction SilentlyContinue)) {
+            $tName = $f.BaseName
+            $seen.Add($tName) | Out-Null
+            $content = try { Get-Content $f.FullName -Raw -Encoding UTF8 -ErrorAction Stop } catch { '' }
+            $vars    = @([regex]::Matches($content, '\{\{([A-Z0-9_]+)\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) |
+                ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+            $rows.Add([pscustomobject]@{
+                Name      = $tName
+                Source    = 'custom'
+                Extension = $f.Extension.TrimStart('.')
+                Variables = $vars -join ', '
+            })
+        }
+    }
+
+    foreach ($tName in ($builtinDefs.Keys | Sort-Object)) {
+        if (-not $seen.Contains($tName)) {
+            $def = $builtinDefs[$tName]
+            $rows.Add([pscustomobject]@{
+                Name      = $tName
+                Source    = 'builtin'
+                Extension = $def.ext
+                Variables = $def.vars -join ', '
+            })
+        }
+    }
+
+    $result = @($rows | Sort-Object Source, Name)
+    if ($result.Count -eq 0) { script:Out-Info 'No templates found.'; return @() }
+
+    Write-Host ''
+    Write-Host '  Available Templates' -ForegroundColor Cyan
+    Write-Host "  $('─' * 72)" -ForegroundColor DarkGray
+    Write-Host ("  {0,-22} {1,-8} {2,-5} {3}" -f 'NAME', 'SOURCE', 'EXT', 'VARIABLES') -ForegroundColor DarkCyan
+    Write-Host "  $('─' * 72)" -ForegroundColor DarkGray
+    foreach ($r in $result) {
+        $c = if ($r.Source -eq 'custom') { 'Yellow' } else { 'Cyan' }
+        Write-Host ("  {0,-22} " -f $r.Name) -ForegroundColor $c -NoNewline
+        Write-Host ("{0,-8} {1,-5} {2}" -f $r.Source, $r.Extension, $r.Variables) -ForegroundColor Gray
+    }
+    Write-Host ''
+    return $result
+}
+
+function New-SnipSchedule {
+    <#
+    .SYNOPSIS
+        Schedules a snippet to run automatically via Windows Task Scheduler.
+
+    .DESCRIPTION
+        Creates a Windows Scheduled Task that runs the named snippet using
+        Invoke-Snip. The task action runs:
+            pwsh -NonInteractive -Command "Import-Module PSSnips; Invoke-Snip '<Name>'"
+        Schedule can be a named trigger (Daily, Weekly, Hourly, OnLogon, OnStartup)
+        or a free-form string stored in metadata for reference. Use -At to specify
+        a start time and -RepeatInterval for custom repetition. Task metadata is
+        persisted to ~/.pssnips/schedules.json.
+
+    .PARAMETER Name
+        Mandatory. The name of the snippet to schedule.
+
+    .PARAMETER Schedule
+        Mandatory. Named trigger or schedule string:
+          Daily, Weekly, Hourly, OnLogon, OnStartup
+        A free-form cron string is also accepted and stored in metadata.
+
+    .PARAMETER Description
+        Optional. A description for the scheduled task.
+
+    .PARAMETER At
+        Optional. The start time for Daily or Weekly schedules.
+        Defaults to the current time when not specified.
+
+    .PARAMETER RepeatInterval
+        Optional. A TimeSpan specifying how often to repeat the trigger.
+
+    .EXAMPLE
+        New-SnipSchedule -Name cleanup-logs -Schedule Daily -At '02:00'
+
+        Schedules 'cleanup-logs' to run every day at 02:00.
+
+    .EXAMPLE
+        New-SnipSchedule -Name health-check -Schedule Hourly
+
+        Schedules 'health-check' to run every hour.
+
+    .EXAMPLE
+        New-SnipSchedule -Name startup-init -Schedule OnStartup
+
+        Schedules 'startup-init' to run at system startup.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        None. Writes a confirmation message to the host.
+
+    .NOTES
+        Requires Windows Task Scheduler (available on all modern Windows systems).
+        The task is registered under the current user account.
+        Task output is appended to ~/.pssnips/schedule.log.
+        Schedule metadata is stored in ~/.pssnips/schedules.json.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory, Position=0, HelpMessage='Snippet name to schedule')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+        [Parameter(Mandatory, Position=1, HelpMessage='Schedule trigger')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Schedule,
+        [string]$Description     = '',
+        [datetime]$At            = (Get-Date),
+        [timespan]$RepeatInterval = [timespan]::Zero
+    )
+    script:InitEnv
+    $idx = script:LoadIdx
+    if (-not $idx.snippets.ContainsKey($Name)) {
+        Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return
+    }
+
+    $taskName   = "PSSnips_$Name"
+    $logFile    = Join-Path $script:Home 'schedule.log'
+    $actionArgs = "-NonInteractive -Command `"Import-Module PSSnips -ErrorAction Stop; Invoke-Snip '$Name' *>> '$logFile'`""
+    $action     = New-ScheduledTaskAction -Execute 'pwsh' -Argument $actionArgs
+
+    $trigger = switch -Regex ($Schedule) {
+        '^Daily$'     { New-ScheduledTaskTrigger -Daily  -At $At }
+        '^Weekly$'    { New-ScheduledTaskTrigger -Weekly -At $At -DaysOfWeek ([System.DayOfWeek](Get-Date).DayOfWeek) }
+        '^Hourly$'    { New-ScheduledTaskTrigger -Once   -At $At -RepetitionInterval (New-TimeSpan -Hours 1) }
+        '^OnLogon$'   { New-ScheduledTaskTrigger -AtLogOn }
+        '^OnStartup$' { New-ScheduledTaskTrigger -AtStartup }
+        default       { New-ScheduledTaskTrigger -Daily  -At $At }
+    }
+
+    if ($PSCmdlet.ShouldProcess($taskName, 'Register scheduled task')) {
+        try {
+            $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1) -StartWhenAvailable
+            $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+            $taskDesc  = if ($Description) { $Description } else { "PSSnips: run snippet '$Name'" }
+            $task      = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings `
+                             -Principal $principal -Description $taskDesc
+            Register-ScheduledTask -TaskName $taskName -InputObject $task -Force -ErrorAction Stop | Out-Null
+
+            $schedulesFile = Join-Path $script:Home 'schedules.json'
+            $schedules = if (Test-Path $schedulesFile) {
+                try { @(Get-Content $schedulesFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { @() }
+            } else { @() }
+            $entry   = [ordered]@{
+                name        = $Name
+                taskName    = $taskName
+                schedule    = $Schedule
+                description = $Description
+                createdAt   = (Get-Date -Format 'o')
+                at          = $At.ToString('o')
+            }
+            $updated = @($schedules | Where-Object { $_.name -ne $Name }) + @($entry)
+            $updated | ConvertTo-Json -Depth 5 | Set-Content $schedulesFile -Encoding UTF8
+            script:Out-OK "Scheduled task '$taskName' registered for snippet '$Name' ($Schedule)."
+        } catch {
+            script:Out-Err "Failed to register scheduled task: $_"
+        }
+    }
+}
+
+function Get-SnipSchedule {
+    <#
+    .SYNOPSIS
+        Lists scheduled tasks for PSSnips snippets.
+
+    .DESCRIPTION
+        Reads ~/.pssnips/schedules.json and queries Windows Task Scheduler for the
+        current state of each registered PSSnips task. Displays a table showing the
+        snippet name, schedule, next run time, last run time, and current state.
+        Use -Name to filter results to a specific snippet.
+
+    .PARAMETER Name
+        Optional. Filter results to the schedule for a specific snippet.
+
+    .EXAMPLE
+        Get-SnipSchedule
+
+        Displays all scheduled PSSnips tasks.
+
+    .EXAMPLE
+        Get-SnipSchedule -Name cleanup-logs
+
+        Shows the schedule information for the 'cleanup-logs' snippet.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject[]
+        Each object has: SnippetName, Schedule, NextRun, LastRun, State.
+
+    .NOTES
+        Requires Windows Task Scheduler access.
+        Tasks are registered in the root Task Scheduler folder with a 'PSSnips_' prefix.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [string]$Name = ''
+    )
+    script:InitEnv
+    $schedulesFile = Join-Path $script:Home 'schedules.json'
+    if (-not (Test-Path $schedulesFile)) { script:Out-Info 'No schedules found.'; return @() }
+
+    $schedules = try { @(Get-Content $schedulesFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { @() }
+    if ($Name) { $schedules = @($schedules | Where-Object { $_.name -eq $Name }) }
+    if (-not $schedules -or $schedules.Count -eq 0) { script:Out-Info 'No schedules found.'; return @() }
+
+    $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($s in $schedules) {
+        $nextRun = 'Unknown'; $lastRun = 'Unknown'; $state = 'Unknown'
+        try {
+            $task = Get-ScheduledTask -TaskName $s.taskName -ErrorAction SilentlyContinue
+            if ($task) {
+                $info    = $task | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue
+                $state   = $task.State.ToString()
+                $nextRun = if ($info.NextRunTime -and $info.NextRunTime -gt [datetime]::MinValue) {
+                    $info.NextRunTime | Get-Date -Format 'yyyy-MM-dd HH:mm'
+                } else { 'N/A' }
+                $lastRun = if ($info.LastRunTime -and $info.LastRunTime -gt [datetime]::MinValue) {
+                    $info.LastRunTime | Get-Date -Format 'yyyy-MM-dd HH:mm'
+                } else { 'Never' }
+            } else { $state = 'Not found' }
+        } catch { $state = 'Error' }
+        $rows.Add([pscustomobject]@{
+            SnippetName = $s.name
+            Schedule    = $s.schedule
+            NextRun     = $nextRun
+            LastRun     = $lastRun
+            State       = $state
+        })
+    }
+
+    $result = $rows.ToArray()
+    Write-Host ''
+    Write-Host '  PSSnips Scheduled Tasks' -ForegroundColor Cyan
+    Write-Host "  $('─' * 78)" -ForegroundColor DarkGray
+    Write-Host ("  {0,-22} {1,-12} {2,-18} {3,-18} {4}" -f 'SNIPPET', 'SCHEDULE', 'NEXT RUN', 'LAST RUN', 'STATE') -ForegroundColor DarkCyan
+    Write-Host "  $('─' * 78)" -ForegroundColor DarkGray
+    foreach ($r in $result) {
+        $c = switch ($r.State) {
+            'Ready'    { 'Green'    }
+            'Disabled' { 'DarkGray' }
+            'Running'  { 'Yellow'   }
+            default    { 'Gray'     }
+        }
+        Write-Host ("  {0,-22} {1,-12} {2,-18} {3,-18} {4}" -f $r.SnippetName, $r.Schedule, $r.NextRun, $r.LastRun, $r.State) -ForegroundColor $c
+    }
+    Write-Host ''
+    return $result
+}
+
+function Remove-SnipSchedule {
+    <#
+    .SYNOPSIS
+        Removes a scheduled task for a PSSnips snippet.
+
+    .DESCRIPTION
+        Unregisters the Windows Scheduled Task associated with the named snippet and
+        removes the entry from ~/.pssnips/schedules.json. Prompts for confirmation
+        unless -Force is specified.
+
+    .PARAMETER Name
+        Mandatory. The name of the snippet whose schedule should be removed.
+
+    .PARAMETER Force
+        Optional switch. Skips the confirmation prompt.
+
+    .EXAMPLE
+        Remove-SnipSchedule -Name cleanup-logs
+
+        Prompts for confirmation, then removes the schedule for 'cleanup-logs'.
+
+    .EXAMPLE
+        Remove-SnipSchedule -Name cleanup-logs -Force
+
+        Removes the schedule without prompting.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        None. Writes a confirmation or error message to the host.
+
+    .NOTES
+        The scheduled task is unregistered from Windows Task Scheduler.
+        The schedules.json entry is also removed.
+        If the task is not found in Task Scheduler, the metadata is still removed.
+    #>
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact='High')]
+    param(
+        [Parameter(Mandatory, Position=0, HelpMessage='Snippet name whose schedule to remove')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+        [switch]$Force
+    )
+    script:InitEnv
+    $schedulesFile = Join-Path $script:Home 'schedules.json'
+    if (-not (Test-Path $schedulesFile)) {
+        Write-Error "No schedule found for '$Name'." -ErrorAction Continue; return
+    }
+    $schedules = try { @(Get-Content $schedulesFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { @() }
+    $entry     = $schedules | Where-Object { $_.name -eq $Name } | Select-Object -First 1
+    if (-not $entry) { Write-Error "No schedule found for snippet '$Name'." -ErrorAction Continue; return }
+
+    if (-not $Force) {
+        $yn = Read-Host "  Remove schedule for '$Name'? [y/N]"
+        if ($yn -notin 'y', 'Y') { script:Out-Info 'Cancelled.'; return }
+    }
+
+    if ($Force -or $PSCmdlet.ShouldProcess($entry.taskName, 'Unregister scheduled task')) {
+        try {
+            $task = Get-ScheduledTask -TaskName $entry.taskName -ErrorAction SilentlyContinue
+            if ($task) { Unregister-ScheduledTask -TaskName $entry.taskName -Confirm:$false -ErrorAction Stop }
+        } catch {
+            script:Out-Warn "Could not unregister task '$($entry.taskName)': $_"
+        }
+        $updated = @($schedules | Where-Object { $_.name -ne $Name })
+        if ($updated.Count -gt 0) {
+            $updated | ConvertTo-Json -Depth 5 | Set-Content $schedulesFile -Encoding UTF8
+        } else {
+            Remove-Item $schedulesFile -Force -ErrorAction SilentlyContinue
+        }
+        script:Out-OK "Schedule for '$Name' removed."
+    }
+}
+
+function Initialize-SnipPreCommitHook {
+    <#
+    .SYNOPSIS
+        Installs a PSSnips pre-commit hook in a Git repository.
+
+    .DESCRIPTION
+        Installs a git pre-commit hook at <RepoPath>/.git/hooks/pre-commit that
+        finds all staged .ps1 files and runs Test-Snip on each one. If a pre-commit
+        hook already exists, the PSSnips check is appended rather than replacing it.
+        A guard comment prevents duplicate insertions on repeated calls.
+        Supports -WhatIf to preview changes without writing any files.
+
+    .PARAMETER RepoPath
+        Optional. Path to the Git repository root. Defaults to the current directory.
+
+    .EXAMPLE
+        Initialize-SnipPreCommitHook
+
+        Installs the pre-commit hook in the current directory's Git repository.
+
+    .EXAMPLE
+        Initialize-SnipPreCommitHook -RepoPath 'C:\MyProject'
+
+        Installs the hook in the specified repository.
+
+    .EXAMPLE
+        Initialize-SnipPreCommitHook -WhatIf
+
+        Previews the hook that would be installed without making any changes.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        None. Writes a confirmation or error message to the host.
+
+    .NOTES
+        The hook uses POSIX shell syntax (#!/bin/sh) for compatibility with Git for
+        Windows. On Windows, Git's bundled sh.exe executes the hook at commit time.
+        If a hook already exists, the PSSnips block is appended and guarded with a
+        comment marker to prevent duplicate insertions on repeated calls.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [string]$RepoPath = (Get-Location).Path
+    )
+    script:InitEnv
+
+    $gitDir   = Join-Path $RepoPath '.git'
+    $hooksDir = Join-Path $gitDir 'hooks'
+    $hookFile = Join-Path $hooksDir 'pre-commit'
+
+    if (-not (Test-Path $gitDir)) {
+        Write-Error "No .git directory found at '$RepoPath'. Is this a Git repository?" -ErrorAction Continue
+        return
+    }
+
+    if ($PSCmdlet.ShouldProcess($hookFile, 'Install PSSnips pre-commit hook')) {
+        try {
+            if (-not (Test-Path $hooksDir)) {
+                New-Item -ItemType Directory -Path $hooksDir -Force | Out-Null
+            }
+
+            if (Test-Path $hookFile) {
+                $existing = Get-Content $hookFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($existing -match 'pssnips-precommit-v1') {
+                    script:Out-Info 'PSSnips pre-commit hook already installed.'
+                    return
+                }
+                # Append to existing hook
+                $pssnipsBlock = "`n# pssnips-precommit-v1`n" +
+                    "staged_ps1=`$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep '\.ps1$')`n" +
+                    "if [ -n `"`$staged_ps1`" ]; then`n" +
+                    "    for f in `$staged_ps1; do`n" +
+                    "        snip_name=`$(basename `"`$f`" .ps1)`n" +
+                    "        pwsh -NonInteractive -Command `"Import-Module PSSnips -ErrorAction Stop; `$r = Test-Snip -Name '`$snip_name' -PassThru; if (`$r | Where-Object { `$_.Severity -eq 'Error' }) { exit 1 }`" 2>/dev/null`n" +
+                    "        if [ `$? -ne 0 ]; then echo `"[PSSnips] Lint errors in `$f - commit blocked.`" >&2; exit 1; fi`n" +
+                    "    done`n" +
+                    "fi`n"
+                Add-Content -Path $hookFile -Value $pssnipsBlock -Encoding UTF8
+                script:Out-OK "PSSnips pre-commit check appended to existing hook: $hookFile"
+            } else {
+                $newHook = "#!/bin/sh`n" +
+                    "# pssnips-precommit-v1`n" +
+                    "staged_ps1=`$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep '\.ps1$')`n" +
+                    "if [ -n `"`$staged_ps1`" ]; then`n" +
+                    "    for f in `$staged_ps1; do`n" +
+                    "        snip_name=`$(basename `"`$f`" .ps1)`n" +
+                    "        pwsh -NonInteractive -Command `"Import-Module PSSnips -ErrorAction Stop; `$r = Test-Snip -Name '`$snip_name' -PassThru; if (`$r | Where-Object { `$_.Severity -eq 'Error' }) { exit 1 }`" 2>/dev/null`n" +
+                    "        if [ `$? -ne 0 ]; then echo `"[PSSnips] Lint errors in `$f - commit blocked.`" >&2; exit 1; fi`n" +
+                    "    done`n" +
+                    "fi`n"
+                Set-Content -Path $hookFile -Value $newHook -Encoding UTF8 -NoNewline
+                script:Out-OK "PSSnips pre-commit hook installed: $hookFile"
+            }
+        } catch {
+            script:Out-Err "Failed to install pre-commit hook: $_"
+        }
+    }
+}
+
 #endregion
 
 Export-ModuleMember -Function @(
@@ -4619,11 +6095,17 @@ Export-ModuleMember -Function @(
     'Export-SnipCollection', 'Import-SnipCollection',
     'Get-GistList', 'Get-Gist', 'Import-Gist', 'Export-Gist', 'Invoke-Gist', 'Sync-Gist',
     'Get-GitLabSnipList', 'Get-GitLabSnip', 'Import-GitLabSnip', 'Export-GitLabSnip',
+    'Get-BitbucketSnipList', 'Import-BitbucketSnip', 'Export-BitbucketSnip', 'Sync-BitbucketSnips',
     'Publish-Snip', 'Sync-SharedSnips',
     'Install-PSSnips', 'Uninstall-PSSnips',
     'Start-SnipManager',
     'Get-SnipHistory', 'Restore-Snip', 'Test-Snip',
     'Invoke-SnipCLI',
     'Get-StaleSnip', 'Get-SnipStats', 'Export-VSCodeSnips', 'Invoke-FuzzySnip',
-    'Add-SnipTerminalProfile'
+    'Add-SnipTerminalProfile',
+    'Get-SnipAuditLog',
+    'Set-SnipRating', 'Add-SnipComment',
+    'New-SnipFromTemplate', 'Get-SnipTemplate',
+    'New-SnipSchedule', 'Get-SnipSchedule', 'Remove-SnipSchedule',
+    'Initialize-SnipPreCommitHook'
 ) -Alias 'snip'
