@@ -65,6 +65,21 @@ $script:Templates = @{
     go   = "package main`n`n// {name} – {desc}`nfunc main() {`n`t`n}`n"
 }
 
+# Index/config in-memory caches (dirty = $true means reload from disk is needed)
+$script:IdxCache     = $null
+$script:IdxDirty     = $true
+$script:CfgCache     = $null
+$script:CfgDirty     = $true
+
+# Argument-completer TTL cache
+$script:CompleterCache     = $null
+$script:CompleterCacheTime = [datetime]::MinValue
+$script:CompleterTtlSecs   = 10
+
+# Full-text search sidecar cache (path set in InitEnv)
+$script:FtsCache     = $null
+$script:FtsCacheFile = ''
+
 #endregion
 
 #region ─── Private Helpers ──────────────────────────────────────────────────
@@ -98,6 +113,9 @@ function script:EnsureDirs {
 }
 
 function script:LoadCfg {
+    if (-not $script:CfgDirty -and $null -ne $script:CfgCache) {
+        return $script:CfgCache
+    }
     # Build a plain hashtable copy of defaults (OrderedDictionary has no .Clone())
     $cfg = @{}
     $script:Defaults.GetEnumerator() | ForEach-Object { $cfg[$_.Key] = $_.Value }
@@ -113,6 +131,8 @@ function script:LoadCfg {
                     }
         } catch { Write-Verbose "LoadCfg: using defaults — $($_.Exception.Message)" }
     }
+    $script:CfgCache = $cfg
+    $script:CfgDirty = $false
     return $cfg
 }
 
@@ -134,6 +154,8 @@ function script:SaveCfg {
         $tmp = "$script:CfgFile.tmp"
         $Cfg | ConvertTo-Json -Depth 5 | Set-Content -Path $tmp -Encoding UTF8
         Move-Item -Path $tmp -Destination $script:CfgFile -Force
+        $script:CfgCache = $Cfg
+        $script:CfgDirty = $false
     } finally {
         script:ReleaseLock -Stream $lock -LockFile $lockFile
         if (Test-Path "$script:CfgFile.tmp") { Remove-Item "$script:CfgFile.tmp" -ErrorAction SilentlyContinue }
@@ -141,17 +163,25 @@ function script:SaveCfg {
 }
 
 function script:LoadIdx {
+    if (-not $script:IdxDirty -and $null -ne $script:IdxCache) {
+        return $script:IdxCache
+    }
     if (Test-Path $script:IdxFile) {
         try {
             $raw = Get-Content $script:IdxFile -Raw -Encoding UTF8 -ErrorAction Stop
             if ($raw) {
                 $idx = $raw | ConvertFrom-Json -AsHashtable  # -AsHashtable preserves nested hashtables for index key access
                 if (-not $idx.ContainsKey('snippets')) { $idx['snippets'] = @{} }
+                $script:IdxCache = $idx
+                $script:IdxDirty = $false
                 return $idx
             }
         } catch { Write-Verbose "LoadIdx: reinitialising index — $($_.Exception.Message)" }
     }
-    return @{ snippets = @{} }
+    $idx = @{ snippets = @{} }
+    $script:IdxCache = $idx
+    $script:IdxDirty = $false
+    return $idx
 }
 
 function script:SaveIdx {
@@ -174,6 +204,9 @@ function script:SaveIdx {
         $tmp = "$script:IdxFile.tmp"
         $Idx | ConvertTo-Json -Depth 10 | Set-Content -Path $tmp -Encoding UTF8
         Move-Item -Path $tmp -Destination $script:IdxFile -Force
+        $script:IdxCache = $Idx
+        $script:IdxDirty = $false
+        $script:CompleterCache = $null
     } finally {
         script:ReleaseLock -Stream $lock -LockFile $lockFile
         if (Test-Path "$script:IdxFile.tmp") { Remove-Item "$script:IdxFile.tmp" -ErrorAction SilentlyContinue }
@@ -341,6 +374,7 @@ function script:WithIdxLock {
 }
 
 function script:InitEnv {
+    $script:FtsCacheFile = Join-Path $script:Home 'fts-cache.json'
     script:EnsureDirs
 
     # Clean up any stale .lock files left by a previous crashed session.
@@ -352,18 +386,60 @@ function script:InitEnv {
         script:SaveCfg -Cfg $def
     }
     if (-not (Test-Path $script:IdxFile)) { script:SaveIdx -Idx @{ snippets = @{} } }
+    script:InvalidateCache
+}
+
+function script:InvalidateCache {
+    $script:IdxDirty     = $true
+    $script:CfgDirty     = $true
+    $script:CompleterCache = $null
+    $script:FtsCache     = $null
 }
 
 function script:SearchSnipContent {
     # Returns $true if the snippet file body contains $SearchString (case-insensitive).
-    # Returns $false when the file is missing or unreadable.
+    # Falls back to direct file read when a FTS cache entry is not yet present.
     param([string]$Name, [string]$SearchString)
+    $fts = script:LoadFts
+    if ($fts.ContainsKey($Name)) {
+        return $fts[$Name] -match [regex]::Escape($SearchString)
+    }
+    # fallback: read file directly (first time or cache miss)
     $snipPath = script:FindFile -Name $Name
     if (-not $snipPath -or -not (Test-Path $snipPath)) { return $false }
-    try {
-        $hit = Select-String -Path $snipPath -Pattern ([regex]::Escape($SearchString)) -CaseSensitive:$false -ErrorAction SilentlyContinue
-        return ($null -ne $hit)
-    } catch { return $false }
+    try { return (Select-String -Path $snipPath -Pattern ([regex]::Escape($SearchString)) -Quiet) }
+    catch { return $false }
+}
+
+function script:LoadFts {
+    if ($null -ne $script:FtsCache) { return $script:FtsCache }
+    if (Test-Path $script:FtsCacheFile) {
+        try {
+            $script:FtsCache = (Get-Content $script:FtsCacheFile -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable)
+        } catch { $script:FtsCache = @{} }
+    } else { $script:FtsCache = @{} }
+    return $script:FtsCache
+}
+
+function script:UpdateFts {
+    param([string]$Name)
+    $fts  = script:LoadFts
+    $file = script:FindFile -Name $Name
+    if ($file -and (Test-Path $file)) {
+        $fts[$Name] = (Get-Content $file -Raw -Encoding UTF8 -ErrorAction SilentlyContinue) ?? ''
+    } else {
+        $fts.Remove($Name)
+    }
+    $fts | ConvertTo-Json -Depth 3 | Set-Content $script:FtsCacheFile -Encoding UTF8
+    $script:FtsCache = $fts
+}
+
+function script:RemoveFts {
+    param([string]$Name)
+    $fts = script:LoadFts
+    $fts.Remove($Name)
+    $fts | ConvertTo-Json -Depth 3 | Set-Content $script:FtsCacheFile -Encoding UTF8
+    $script:FtsCache = $fts
 }
 
 function script:GetSharedDir {
@@ -998,6 +1074,7 @@ function New-Snip {
         gistId = $null; gistUrl = $null; contentHash = $newHash
     }
     script:SaveIdx -Idx $idx
+    script:UpdateFts -Name $Name
     script:Out-OK "Snippet '$Name' ($langExt) created."
 
     if (-not $Content) { Edit-Snip -Name $Name -Editor $Editor }
@@ -1124,6 +1201,7 @@ function Add-Snip {
             gistId = $null; gistUrl = $null; contentHash = $addHash
         }
         script:SaveIdx -Idx $idx
+        script:UpdateFts -Name $Name
         script:Out-OK "Snippet '$Name' ($langExt, $($content.Length) chars) added."
     }
 }
@@ -1188,6 +1266,7 @@ function Remove-Snip {
         if ($p -and (Test-Path $p)) { Remove-Item $p -Force }
         $idx.snippets.Remove($Name)
         script:SaveIdx -Idx $idx
+        script:RemoveFts -Name $Name
         script:Out-OK "Snippet '$Name' deleted."
     }
 }
@@ -1257,6 +1336,7 @@ function Edit-Snip {
             $idx.snippets[$Name]['contentHash'] = script:GetContentHash -Content $editedContent
         }
         script:SaveIdx -Idx $idx
+        script:UpdateFts -Name $Name
     }
 }
 
@@ -3207,16 +3287,16 @@ function Start-SnipManager {
     param()
     script:InitEnv
 
+    $idx   = script:LoadIdx
     $sel   = 0
     $mode  = 'list'   # 'list' | 'detail'
     $query = ''
     $msg   = ''
 
     function Get-Filtered {
-        param([string]$q)
-        $idx = script:LoadIdx
-        $allItems = @(foreach ($n in ($idx.snippets.Keys | Sort-Object)) {
-            $m = $idx.snippets[$n]
+        param([hashtable]$Idx, [string]$q)
+        $allItems = @(foreach ($n in ($Idx.snippets.Keys | Sort-Object)) {
+            $m = $Idx.snippets[$n]
         # @($m.tags) guard: PS 5.1 may return a bare string for single-element arrays
             if (-not $q -or $n -like "*$q*" -or ($m.description -like "*$q*") -or
                 ((@($m.tags) -join ',') -like "*$q*")) {
@@ -3293,7 +3373,7 @@ function Start-SnipManager {
         Clear-Host
 
         :outer while ($true) {
-            $list = Get-Filtered -q $query
+            $list = Get-Filtered -Idx $idx -q $query
         if ($null -eq $list) { $list = @() }
             if ($sel -ge $list.Count) { $sel = [Math]::Max(0, $list.Count - 1) }
 
@@ -3325,6 +3405,7 @@ function Start-SnipManager {
                                 if ($nm) {
                                     if (-not $la) { $la = (script:LoadCfg).DefaultLanguage }
                                     New-Snip -Name $nm -Language $la -Description $de
+                                    $idx = script:LoadIdx
                                     $msg = "[+] Created '$nm'"
                                 }
                                 Clear-Host
@@ -3333,6 +3414,7 @@ function Start-SnipManager {
                                 if ($list.Count -gt 0) {
                                     [Console]::CursorVisible = $true
                                     Clear-Host; Edit-Snip -Name $list[$sel].Name
+                                    $idx = script:LoadIdx
                                     $msg = "[+] Saved changes to '$($list[$sel].Name)'"
                                     [Console]::CursorVisible = $false; Clear-Host
                                 }
@@ -3355,6 +3437,7 @@ function Start-SnipManager {
                                     [Console]::CursorVisible = $false
                                     if ($yn -in 'y','Y') {
                                         Remove-Snip -Name $list[$sel].Name -Force
+                                        $idx = script:LoadIdx
                                         if ($sel -ge $list.Count - 1 -and $sel -gt 0) { $sel-- }
                                         $msg = "[+] Deleted"
                                     }
@@ -3365,6 +3448,7 @@ function Start-SnipManager {
                                 if ($list.Count -gt 0) {
                                     [Console]::CursorVisible = $true
                                     Clear-Host; Export-Gist -Name $list[$sel].Name
+                                    $idx = script:LoadIdx
                                     Read-Host "`n  [Press Enter to return]"
                                     [Console]::CursorVisible = $false; Clear-Host
                                 }
@@ -3387,6 +3471,7 @@ function Start-SnipManager {
                             'e' {
                                 [Console]::CursorVisible = $true
                                 Clear-Host; Edit-Snip -Name $list[$sel].Name
+                                $idx = script:LoadIdx
                                 [Console]::CursorVisible = $false; Clear-Host
                             }
                             'r' {
@@ -3399,6 +3484,7 @@ function Start-SnipManager {
                             'g' {
                                 [Console]::CursorVisible = $true
                                 Clear-Host; Export-Gist -Name $list[$sel].Name
+                                $idx = script:LoadIdx
                                 Read-Host "`n  [Press Enter to return]"
                                 [Console]::CursorVisible = $false; Clear-Host
                             }
@@ -3729,8 +3815,13 @@ Set-Alias -Name snip -Value Invoke-SnipCLI -Scope Global -Description 'PSSnips d
 $snipNameCompleter = {
     param($cmd, $param, $word)
     $null = $cmd, $param
-    $idx = script:LoadIdx
-    $idx.snippets.Keys | Where-Object { $_ -like "$word*" } | Sort-Object
+    $now = Get-Date
+    if ($null -eq $script:CompleterCache -or
+        ($now - $script:CompleterCacheTime).TotalSeconds -gt $script:CompleterTtlSecs) {
+        $script:CompleterCache = (script:LoadIdx).snippets.Keys | Sort-Object
+        $script:CompleterCacheTime = $now
+    }
+    $script:CompleterCache | Where-Object { $_ -like "$word*" }
 }
 
 Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip','Show-Snip','Edit-Snip','Invoke-Snip','Remove-Snip','Copy-Snip','Export-Gist','Sync-Gist','Set-SnipTag' -ParameterName Name -ScriptBlock $snipNameCompleter
@@ -3789,6 +3880,525 @@ script:InitEnv
 
 #endregion
 
+#region ─── Analytics & Utilities ────────────────────────────────────────────
+# Get-StaleSnip, Get-SnipStats, Export-VSCodeSnips, Invoke-FuzzySnip
+
+function Get-StaleSnip {
+    <#
+    .SYNOPSIS
+        Lists snippets that have not been run in N days (or have never been run).
+
+    .DESCRIPTION
+        Reads the snippet index and identifies snippets whose last execution date
+        falls at or beyond the specified staleness threshold. Optionally includes
+        snippets that have no recorded execution at all. Results are sorted with
+        the most idle snippets first. Use -PassThru to receive the objects
+        directly for further pipeline processing instead of displaying the table.
+
+    .PARAMETER DaysUnused
+        The staleness threshold in days. Snippets whose last run was at least this
+        many days ago are included. Defaults to 90.
+
+    .PARAMETER IncludeNeverRun
+        When specified, snippets with no recorded run (runCount is absent or zero)
+        are also included in the results. They are shown with DaysIdle = MaxValue
+        and sorted to the bottom of the list (after legitimately stale snippets).
+
+    .PARAMETER PassThru
+        When specified, suppresses the formatted table output and returns the
+        result objects directly so they can be piped to further commands.
+
+    .EXAMPLE
+        Get-StaleSnip
+
+        Lists all snippets that have not been run in 90 or more days.
+
+    .EXAMPLE
+        Get-StaleSnip -DaysUnused 30 -IncludeNeverRun
+
+        Lists snippets idle for 30+ days plus any that have never been run.
+
+    .EXAMPLE
+        Get-StaleSnip -DaysUnused 60 -PassThru | Remove-Snip
+
+        Retrieves stale snippet objects and pipes their names to Remove-Snip.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject[]
+        Each object has: Name, Language, Tags, LastRun, DaysIdle, RunCount.
+
+    .NOTES
+        DaysIdle is computed from [datetime]::Now. Snippets with no lastRun entry
+        and -IncludeNeverRun will show DaysIdle as 2147483647 ([int]::MaxValue).
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$DaysUnused = 90,
+        [switch]$IncludeNeverRun,
+        [switch]$PassThru
+    )
+    script:InitEnv
+    $idx = script:LoadIdx
+
+    $results = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    foreach ($name in $idx.snippets.Keys) {
+        $entry    = $idx.snippets[$name]
+        $hasRun   = $entry.ContainsKey('lastRun') -and $entry['lastRun']
+        $runCount = if ($entry.ContainsKey('runCount')) { [int]$entry['runCount'] } else { 0 }
+
+        if ($hasRun) {
+            $daysIdle = ([datetime]::Now - [datetime]$entry['lastRun']).Days
+        } elseif ($IncludeNeverRun) {
+            $daysIdle = [int]::MaxValue
+        } else {
+            continue
+        }
+
+        if ($daysIdle -ge $DaysUnused) {
+            $results.Add([pscustomobject]@{
+                Name     = $name
+                Language = $entry['language']
+                Tags     = @($entry['tags']) -join ', '
+                LastRun  = if ($hasRun) { [datetime]$entry['lastRun'] | Get-Date -Format 'yyyy-MM-dd' } else { 'Never' }
+                DaysIdle = if ($daysIdle -eq [int]::MaxValue) { '∞' } else { $daysIdle }
+                RunCount = $runCount
+            })
+        }
+    }
+
+    # Sort: finite DaysIdle descending, then never-run entries last
+    $sorted = @($results | Sort-Object {
+        if ($_.DaysIdle -eq '∞') { [int]::MaxValue } else { [int]$_.DaysIdle }
+    } -Descending)
+
+    if (-not $PassThru) {
+        if ($sorted.Count -eq 0) {
+            script:Out-Info "No stale snippets found (threshold: $DaysUnused days)."
+        } else {
+            Write-Host ""
+            Write-Host "  Stale Snippets  (idle ≥ $DaysUnused days)" -ForegroundColor Cyan
+            Write-Host "  $('─' * 72)" -ForegroundColor DarkGray
+            Write-Host ("  {0,-23} {1,-5} {2,-10} {3,-8} {4}" -f 'NAME','LANG','LAST RUN','DAYS IDLE','TAGS') -ForegroundColor DarkCyan
+            Write-Host "  $('─' * 72)" -ForegroundColor DarkGray
+            foreach ($r in $sorted) {
+                $c = script:LangColor -ext $r.Language
+                Write-Host ("  {0,-23} " -f $r.Name) -ForegroundColor $c -NoNewline
+                Write-Host ("{0,-5} {1,-10} {2,-8} {3}" -f $r.Language, $r.LastRun, $r.DaysIdle, $r.Tags) -ForegroundColor Gray
+            }
+            Write-Host ""
+        }
+    }
+
+    return $sorted
+}
+
+function Get-SnipStats {
+    <#
+    .SYNOPSIS
+        Shows execution analytics — run counts, last run times, and usage leaderboard.
+
+    .DESCRIPTION
+        Reads the snippet index and builds a ranked leaderboard of the most frequently
+        or most recently run snippets. Snippets that have never been run are included
+        with a RunCount of 0. Use -All to see the full collection rather than just
+        the top N entries. Use -PassThru to receive the ranked objects for pipeline
+        processing without printing the table.
+
+    .PARAMETER Top
+        The number of top entries to display. Defaults to 10. Ignored when -All is set.
+
+    .PARAMETER SortBy
+        The field used to rank and sort results. Valid values:
+          RunCount  – most-run snippets first (default)
+          LastRun   – most-recently run snippets first
+          Name      – alphabetical ascending
+
+    .PARAMETER All
+        When specified, all snippets are included regardless of -Top.
+
+    .PARAMETER PassThru
+        When specified, suppresses the formatted table and returns the ranked
+        objects directly for pipeline use.
+
+    .EXAMPLE
+        Get-SnipStats
+
+        Displays the top 10 snippets by run count.
+
+    .EXAMPLE
+        Get-SnipStats -Top 20 -SortBy LastRun
+
+        Displays the 20 most-recently run snippets.
+
+    .EXAMPLE
+        Get-SnipStats -All -PassThru | Export-Csv stats.csv -NoTypeInformation
+
+        Returns all snippet stat objects and exports them to CSV.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject[]
+        Each object has: Rank, Name, Language, RunCount, LastRun, Tags.
+
+    .NOTES
+        Snippets with no runCount entry are treated as RunCount = 0.
+        Snippets with no lastRun entry are shown as LastRun = 'Never'.
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject[]])]
+    param(
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$Top = 10,
+        [ValidateSet('RunCount','LastRun','Name')]
+        [string]$SortBy = 'RunCount',
+        [switch]$All,
+        [switch]$PassThru
+    )
+    script:InitEnv
+    $idx = script:LoadIdx
+
+    $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($name in $idx.snippets.Keys) {
+        $entry    = $idx.snippets[$name]
+        $runCount = if ($entry.ContainsKey('runCount')) { [int]$entry['runCount'] } else { 0 }
+        $lastRun  = if ($entry.ContainsKey('lastRun') -and $entry['lastRun']) {
+            [datetime]$entry['lastRun'] | Get-Date -Format 'yyyy-MM-dd HH:mm'
+        } else { 'Never' }
+        $rows.Add([pscustomobject]@{
+            Rank     = 0   # assigned after sort
+            Name     = $name
+            Language = $entry['language']
+            RunCount = $runCount
+            LastRun  = $lastRun
+            Tags     = @($entry['tags']) -join ', '
+        })
+    }
+
+    $sorted = switch ($SortBy) {
+        'RunCount' { @($rows | Sort-Object RunCount -Descending) }
+        'LastRun'  {
+            # 'Never' entries sort to bottom
+            @($rows | Sort-Object {
+                if ($_.LastRun -eq 'Never') { [datetime]::MinValue } else { [datetime]$_.LastRun }
+            } -Descending)
+        }
+        'Name'     { @($rows | Sort-Object Name) }
+        default    { @($rows | Sort-Object RunCount -Descending) }
+    }
+
+    if (-not $All) { $sorted = @($sorted | Select-Object -First $Top) }
+
+    # Assign 1-based rank
+    for ($i = 0; $i -lt $sorted.Count; $i++) { $sorted[$i].Rank = $i + 1 }
+
+    if (-not $PassThru) {
+        if ($sorted.Count -eq 0) {
+            script:Out-Info "No snippets found."
+        } else {
+            $neverRun = @($sorted | Where-Object { $_.RunCount -eq 0 }).Count
+            Write-Host ""
+            Write-Host "  Snippet Execution Statistics" -ForegroundColor Cyan
+            $subtitle = if ($All) { "All $($sorted.Count) snippets" } else { "Top $($sorted.Count)" }
+            Write-Host "  $subtitle · sorted by $SortBy" -ForegroundColor DarkGray
+            Write-Host "  $('─' * 72)" -ForegroundColor DarkGray
+            Write-Host ("  {0,4}  {1,-23} {2,-5} {3,8}  {4,-17} {5}" -f '#','NAME','LANG','RUNS','LAST RUN','TAGS') -ForegroundColor DarkCyan
+            Write-Host "  $('─' * 72)" -ForegroundColor DarkGray
+            foreach ($r in $sorted) {
+                $c        = script:LangColor -ext $r.Language
+                $runsDisp = if ($r.RunCount -gt 0) { "$($r.RunCount)" } else { '—' }
+                Write-Host ("  {0,4}  {1,-23} " -f $r.Rank, $r.Name) -ForegroundColor $c -NoNewline
+                Write-Host ("{0,-5} {1,8}  {2,-17} {3}" -f $r.Language, $runsDisp, $r.LastRun, $r.Tags) -ForegroundColor Gray
+            }
+            Write-Host ""
+            if ($neverRun -eq $sorted.Count) {
+                script:Out-Info "No snippets have been run yet. Use 'snip run <name>' to execute one."
+            }
+        }
+    }
+
+    return $sorted
+}
+
+function Export-VSCodeSnips {
+    <#
+    .SYNOPSIS
+        Exports the PSSnips collection to VS Code user snippets format.
+
+    .DESCRIPTION
+        Reads local snippets and writes them as VS Code user snippet JSON files
+        (one file per language) to the VS Code User snippets directory. Each snippet
+        is written in the standard VS Code format with prefix, body array, and
+        description fields. Use -Language to export only one language. Use -WhatIf
+        to preview what would be written without touching any files. Use -PassThru
+        to receive the generated JSON hashtable objects for further processing.
+
+        Auto-detected VS Code snippets directory locations (in preference order):
+          %APPDATA%\Code\User\snippets          (VS Code Stable)
+          %APPDATA%\Code - Insiders\User\snippets  (VS Code Insiders)
+
+        Language-to-filename mapping:
+          ps1/psm1 → powershell.json    py  → python.json
+          js       → javascript.json    ts  → typescript.json
+          sh/bash  → shellscript.json   rb  → ruby.json
+          go       → go.json            sql → sql.json
+          md       → markdown.json      txt/other → plaintext.json
+
+    .PARAMETER Language
+        Optional. Filter to a single language extension (e.g., 'ps1', 'py', 'js').
+        When omitted all languages present in the index are exported.
+
+    .PARAMETER OutputDir
+        Optional. Path to the VS Code snippets directory. When omitted the
+        auto-detected path is used. The directory must already exist.
+
+    .PARAMETER WhatIf
+        When specified, prints "Would write <path>" for each file that would be
+        written without actually writing anything.
+
+    .PARAMETER PassThru
+        When specified, returns the generated snippet hashtables keyed by output
+        file path instead of (or in addition to) writing them.
+
+    .EXAMPLE
+        Export-VSCodeSnips
+
+        Exports all snippets to the auto-detected VS Code snippets directory.
+
+    .EXAMPLE
+        Export-VSCodeSnips -Language ps1 -WhatIf
+
+        Previews what would be written for PowerShell snippets only.
+
+    .EXAMPLE
+        Export-VSCodeSnips -OutputDir 'C:\MySnippets'
+
+        Exports all snippets to a custom directory.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.Collections.Hashtable (keyed by output path) when -PassThru is set.
+        Otherwise None — writes files and prints confirmation messages.
+
+    .NOTES
+        Snippet file content is split on newlines to produce the VS Code body array.
+        If the VS Code snippets directory cannot be detected and -OutputDir is not
+        provided, the function warns and exits without writing any files.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([hashtable])]
+    param(
+        [string]$Language  = '',
+        [string]$OutputDir = '',
+        [switch]$WhatIf,
+        [switch]$PassThru
+    )
+    script:InitEnv
+
+    # ── Resolve output directory ────────────────────────────────────────────
+    $resolvedDir = $OutputDir
+    if (-not $resolvedDir) {
+        $candidates = @(
+            (Join-Path $env:APPDATA 'Code\User\snippets'),
+            (Join-Path $env:APPDATA 'Code - Insiders\User\snippets')
+        )
+        foreach ($c in $candidates) {
+            if (Test-Path $c) { $resolvedDir = $c; break }
+        }
+    }
+    if (-not $resolvedDir -or -not (Test-Path $resolvedDir)) {
+        script:Out-Warn "VS Code snippets directory not found. Provide -OutputDir or install VS Code."
+        return
+    }
+
+    # ── Language → VS Code filename map ────────────────────────────────────
+    $langMap = @{
+        ps1  = 'powershell.json';  psm1 = 'powershell.json'
+        py   = 'python.json'
+        js   = 'javascript.json'
+        ts   = 'typescript.json'
+        sh   = 'shellscript.json'; bash = 'shellscript.json'
+        rb   = 'ruby.json'
+        go   = 'go.json'
+        sql  = 'sql.json'
+        md   = 'markdown.json'
+    }
+
+    $idx = script:LoadIdx
+    $cfg = script:LoadCfg
+
+    # ── Group snippets by VS Code output file ──────────────────────────────
+    $byFile = @{}   # outPath → hashtable of VS Code snippet entries
+    foreach ($name in $idx.snippets.Keys) {
+        $entry = $idx.snippets[$name]
+        $lang  = $entry['language']
+        if ($Language -and $lang -ne $Language) { continue }
+
+        $vsFile = if ($langMap.ContainsKey($lang)) { $langMap[$lang] } else { 'plaintext.json' }
+        $outPath = Join-Path $resolvedDir $vsFile
+
+        $snipPath = script:FindFile -Name $name
+        if (-not $snipPath -or -not (Test-Path $snipPath)) { continue }
+
+        $bodyLines = @(Get-Content $snipPath -Encoding UTF8)
+        $desc = if ($entry.ContainsKey('description') -and $entry['description']) { $entry['description'] } else { $name }
+
+        if (-not $byFile.ContainsKey($outPath)) { $byFile[$outPath] = @{} }
+        $byFile[$outPath][$name] = @{
+            prefix      = $name
+            body        = $bodyLines
+            description = $desc
+        }
+    }
+
+    if ($byFile.Count -eq 0) {
+        script:Out-Info "No snippets to export$(if ($Language) { " for language '$Language'" })."
+        return
+    }
+
+    $passThruResult = @{}
+
+    foreach ($outPath in ($byFile.Keys | Sort-Object)) {
+        $fileSnips = $byFile[$outPath]
+
+        # Merge with existing VS Code snippets file when present
+        $merged = @{}
+        if (Test-Path $outPath) {
+            try {
+                $existing = Get-Content $outPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -AsHashtable
+                foreach ($k in $existing.Keys) { $merged[$k] = $existing[$k] }
+            } catch { Write-Verbose "Export-VSCodeSnips: could not read existing file '$outPath' — overwriting." }
+        }
+        foreach ($k in $fileSnips.Keys) { $merged[$k] = $fileSnips[$k] }
+
+        if ($WhatIf -or $PSCmdlet.ShouldProcess($outPath, 'Write VS Code snippets file')) {
+            if ($WhatIf) {
+                script:Out-Info "Would write $($fileSnips.Count) snippet(s) → $outPath"
+            } else {
+                $merged | ConvertTo-Json -Depth 10 | Set-Content -Path $outPath -Encoding UTF8
+                script:Out-OK "Wrote $($fileSnips.Count) snippet(s) → $outPath"
+            }
+        }
+
+        if ($PassThru) { $passThruResult[$outPath] = $merged }
+    }
+
+    if ($PassThru) { return $passThruResult }
+}
+
+function Invoke-FuzzySnip {
+    <#
+    .SYNOPSIS
+        Launches an interactive fuzzy-finder picker for snippets using fzf.
+
+    .DESCRIPTION
+        Pipes all snippet names to fzf (or PSFzf's Invoke-Fzf) for interactive
+        fuzzy selection, then executes the chosen action — Show, Run, or Edit — on
+        the selected snippet. Requires fzf on PATH or the PSFzf module installed.
+        When neither is available, falls back to Get-Snip to list snippets with a
+        warning explaining how to install fzf.
+
+    .PARAMETER Action
+        The action to execute on the selected snippet:
+          Show  – display the snippet content (default)
+          Run   – execute the snippet via Invoke-Snip
+          Edit  – open the snippet in the configured editor via Edit-Snip
+
+    .PARAMETER Filter
+        Optional pre-filter string passed to fzf via --query so the picker opens
+        with the search box already populated.
+
+    .EXAMPLE
+        Invoke-FuzzySnip
+
+        Opens the fuzzy picker; pressing Enter on a selection shows it.
+
+    .EXAMPLE
+        Invoke-FuzzySnip -Action Run
+
+        Opens the fuzzy picker and runs the selected snippet.
+
+    .EXAMPLE
+        Invoke-FuzzySnip -Action Edit -Filter azure
+
+        Opens the fuzzy picker pre-filtered to 'azure' and edits the selection.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.String
+        The name of the selected snippet, or nothing if the user pressed Esc.
+
+    .NOTES
+        Install fzf:      winget install fzf
+        Install PSFzf:    Install-Module PSFzf
+        If only PSFzf is available (without the raw fzf binary on PATH), Invoke-Fzf
+        from that module is used instead of piping to fzf directly.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [ValidateSet('Show','Run','Edit')]
+        [string]$Action = 'Show',
+        [string]$Filter = ''
+    )
+    script:InitEnv
+    $idx = script:LoadIdx
+
+    if ($idx.snippets.Count -eq 0) {
+        script:Out-Info "No snippets yet. Use 'snip new <name>' to create one."
+        return
+    }
+
+    $names = @($idx.snippets.Keys | Sort-Object)
+
+    $fzfAvailable  = [bool](Get-Command fzf -ErrorAction SilentlyContinue)
+    $psFzfAvailable = [bool](Get-Module -ListAvailable PSFzf -ErrorAction SilentlyContinue)
+
+    if (-not $fzfAvailable -and -not $psFzfAvailable) {
+        Write-Warning "fzf not found. Install via: winget install fzf  or: Install-Module PSFzf"
+        Get-Snip
+        return
+    }
+
+    $selected = $null
+
+    if ($fzfAvailable) {
+        $modulePath = $PSScriptRoot
+        $previewCmd = "pwsh -NoProfile -Command `"Import-Module '$modulePath\PSSnips.psm1' -Force; Show-Snip -Name '{}'`""
+        $fzfArgs    = @('--height','40%','--reverse','--preview',$previewCmd)
+        if ($Filter) { $fzfArgs += @('--query', $Filter) }
+        $selected = $names | & fzf @fzfArgs
+    } elseif ($psFzfAvailable) {
+        Import-Module PSFzf -ErrorAction SilentlyContinue
+        $fzfParams = @{ Input = $names }
+        if ($Filter) { $fzfParams['Query'] = $Filter }
+        $selected = Invoke-Fzf @fzfParams
+    }
+
+    if (-not $selected) { return }   # user pressed Esc or made no selection
+
+    switch ($Action) {
+        'Show' { Show-Snip  -Name $selected }
+        'Run'  { Invoke-Snip -Name $selected }
+        'Edit' { Edit-Snip   -Name $selected }
+    }
+
+    return $selected
+}
+
+#endregion
+
 Export-ModuleMember -Function @(
     'Initialize-PSSnips',
     'Get-SnipConfig', 'Set-SnipConfig',
@@ -3800,5 +4410,6 @@ Export-ModuleMember -Function @(
     'Install-PSSnips', 'Uninstall-PSSnips',
     'Start-SnipManager',
     'Get-SnipHistory', 'Restore-Snip', 'Test-Snip',
-    'Invoke-SnipCLI'
+    'Invoke-SnipCLI',
+    'Get-StaleSnip', 'Get-SnipStats', 'Export-VSCodeSnips', 'Invoke-FuzzySnip'
 ) -Alias 'snip'

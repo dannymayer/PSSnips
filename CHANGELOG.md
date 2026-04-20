@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] — 2026-04-20
+
+### Added
+
+- **`Get-StaleSnip [-DaysUnused <int>] [-IncludeNeverRun]`** — lists snippets
+  not run in N days (default 90). Displays `DaysIdle` column; never-run
+  snippets shown as `∞` with `-IncludeNeverRun`.
+- **`Get-SnipStats [-Top <int>] [-SortBy RunCount|LastRun|Name] [-All]`** —
+  execution leaderboard aggregated from index `runCount` / `lastRun` metadata.
+- **`Export-VSCodeSnips [-Language <ext>] [-OutputDir <path>] [-WhatIf]`** —
+  exports the snippet collection to VS Code user snippets JSON format
+  (`$env:APPDATA\Code\User\snippets\<lang>.json`). Merges with existing files.
+  Auto-detects VS Code Stable and Insiders installs.
+- **`Invoke-FuzzySnip [-Action Show|Run|Edit] [-Filter <string>]`** — fuzzy
+  snippet picker via `fzf` with in-terminal preview. Falls back to `PSFzf`'s
+  `Invoke-Fzf` if raw fzf is unavailable, or to `Get-Snip` if neither is
+  installed.
+
+### Performance
+
+- **Module-level index/config cache** — `LoadIdx` and `LoadCfg` return a
+  cached in-memory hashtable on repeat calls; dirty flag cleared on every
+  `SaveIdx`/`SaveCfg`; reduces per-operation I/O by ~90%.
+- **Argument completer TTL cache** — snippet name completions are cached for
+  10 seconds and invalidated immediately on any write, eliminating a full
+  index deserialise on every `<TAB>` press.
+- **TUI single-load optimisation** — `Start-SnipManager` loads the index once
+  at startup; `Get-Filtered` uses the in-memory copy; index refreshed only
+  after write actions (`n`, `e`, `d`, `g`).
+- **Full-text search sidecar cache (`fts-cache.json`)** — `Get-Snip -Content`
+  now queries an in-memory FTS index rebuilt on each save instead of reading
+  every snippet file from disk. Cache file excluded from git via `.gitignore`.
+
+---
+
 ## [1.0.2] — 2026-04-20
 
 ### Fixed
@@ -120,6 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.1.0]: https://github.com/dannymayer/PSSnips/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/dannymayer/PSSnips/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/dannymayer/PSSnips/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/dannymayer/PSSnips/releases/tag/v1.0.0
