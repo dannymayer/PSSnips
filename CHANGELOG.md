@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] — 2026-04-20
+
+### Added
+
+- **`Add-SnipTerminalProfile [-Keybinding <string>] [-Font <string>] [-Path <string>] [-Force] [-WhatIf]`** —
+  injects a PSSnips TUI profile, a custom colour scheme (Catppuccin Mocha-inspired
+  dark theme), and an optional keybinding (`Ctrl+Alt+S` by default) into Windows
+  Terminal's `settings.json`. Auto-detects Stable, Preview, and unpackaged
+  installs. Idempotent: warns on re-run unless `-Force` is passed. Fully
+  `-WhatIf` / `-Confirm` compatible.
+
+---
+
 ## [1.1.0] — 2026-04-20
 
 ### Added

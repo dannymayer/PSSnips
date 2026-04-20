@@ -88,12 +88,12 @@ $script:FtsCacheFile = ''
 
 function script:Out-Banner {
     $lines = @(
-        "  ____  ____  ____       _            ",
-        " |  _ \/ ___||  _ \ ___ (_)_ __  ___  ",
-        " | |_) \___ \| |_) / __|| | '_ \/ __| ",
-        " |  __/ ___) |  __/\__ \| | |_) \__ \ ",
-        " |_|  |____/|_|   |___/|_| .__/|___/ ",
-        "                         |_|          "
+"   ___  __  __       _           ",
+"  / _ \/ _\/ _\_ __ (_)_ __  ___ ",
+" / /_)/\ \ \ \| '_ \| | '_ \/ __|",
+"/ ___/ _\ \_\ \ | | | | |_) \__ \",
+"\/     \__/\__/_| |_|_| .__/|___/",
+"                     |_|         "
     )
     Write-Host ""
     foreach ($l in $lines) { Write-Host $l -ForegroundColor Cyan }
@@ -4397,6 +4397,219 @@ function Invoke-FuzzySnip {
     return $selected
 }
 
+function Add-SnipTerminalProfile {
+    <#
+    .SYNOPSIS
+        Adds a PSSnips TUI profile to Windows Terminal.
+
+    .DESCRIPTION
+        Injects a PSSnips profile entry, a matching colour scheme, and an
+        optional keybinding into the Windows Terminal settings.json file.
+
+        Detects the correct settings.json path automatically, checking for
+        Windows Terminal Stable, Preview, and unpackaged (portable) installs in
+        that order. If multiple installs are present, only the first detected
+        path is modified unless -Path is specified explicitly.
+
+        Does not modify any file when -WhatIf is specified. If the PSSnips
+        profile already exists and -Force is not set, the function warns and
+        returns without modifying anything.
+
+    .PARAMETER Keybinding
+        Keyboard shortcut used to open the PSSnips TUI in a new tab.
+        Defaults to 'ctrl+alt+s'. Pass an empty string to skip adding a
+        keybinding entry entirely.
+
+    .PARAMETER Font
+        Font face to use inside the PSSnips profile. Defaults to 'Cascadia Code'.
+        Any font installed on the system may be specified.
+
+    .PARAMETER Path
+        Explicit path to a Windows Terminal settings.json file. When omitted the
+        function auto-detects the correct location.
+
+    .PARAMETER Force
+        Overwrites an existing PSSnips profile and colour scheme if they are
+        already present in settings.json.
+
+    .EXAMPLE
+        Add-SnipTerminalProfile
+
+        Adds the PSSnips profile with default settings: Ctrl+Alt+S keybinding,
+        Cascadia Code font, and the PSSnips colour scheme.
+
+    .EXAMPLE
+        Add-SnipTerminalProfile -Keybinding 'ctrl+shift+s' -Font 'JetBrains Mono'
+
+        Adds the profile with a custom keybinding and font face.
+
+    .EXAMPLE
+        Add-SnipTerminalProfile -WhatIf
+
+        Shows what would be changed without writing to settings.json.
+
+    .EXAMPLE
+        Add-SnipTerminalProfile -Force
+
+        Re-applies the PSSnips profile and colour scheme even if already present.
+
+    .INPUTS
+        None. This function does not accept pipeline input.
+
+    .OUTPUTS
+        System.String
+        The path to the settings.json file that was (or would be) modified.
+
+    .NOTES
+        Requires Windows Terminal (Stable or Preview) to be installed.
+        Install via: winget install Microsoft.WindowsTerminal
+
+        The injected colour scheme is named 'PSSnips' and uses a dark theme
+        based on the Catppuccin Mocha palette. Colours can be customised by
+        editing settings.json after the profile is created.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([string])]
+    param(
+        [string]$Keybinding = 'ctrl+alt+s',
+        [string]$Font       = 'Cascadia Code',
+        [string]$Path       = '',
+        [switch]$Force
+    )
+
+    # ── Locate settings.json ──────────────────────────────────────────────────
+    $candidates = @(
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json",
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json",
+        "$env:LOCALAPPDATA\Microsoft\Windows Terminal\settings.json"
+    )
+
+    $settingsPath = if ($Path) {
+        $Path
+    } else {
+        $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+
+    if (-not $settingsPath -or -not (Test-Path $settingsPath)) {
+        Write-Error "Windows Terminal settings.json not found. Install Windows Terminal: winget install Microsoft.WindowsTerminal"
+        return
+    }
+
+    # ── Load settings ─────────────────────────────────────────────────────────
+    $raw      = Get-Content -Raw -LiteralPath $settingsPath
+    $settings = $raw | ConvertFrom-Json -AsHashtable
+
+    # Ensure required top-level keys exist
+    if (-not $settings.ContainsKey('profiles'))  { $settings['profiles']  = @{} }
+    if (-not $settings.profiles.ContainsKey('list')) { $settings.profiles['list'] = @() }
+    if (-not $settings.ContainsKey('schemes'))   { $settings['schemes']   = @() }
+    if (-not $settings.ContainsKey('actions'))   { $settings['actions']   = @() }
+
+    # ── Check for existing profile ────────────────────────────────────────────
+    $existingProfile = @($settings.profiles.list) | Where-Object { $_.name -eq 'PSSnips TUI' }
+
+    if ($existingProfile -and -not $Force) {
+        Write-Warning "PSSnips profile already exists in settings.json. Use -Force to overwrite."
+        return $settingsPath
+    }
+
+    # ── PSSnips colour scheme (Catppuccin Mocha-inspired) ─────────────────────
+    $scheme = [ordered]@{
+        name                = 'PSSnips'
+        background          = '#1E1E2E'
+        foreground          = '#CDD6F4'
+        cursorColor         = '#F5E0DC'
+        selectionBackground = '#313244'
+        black               = '#45475A'
+        blue                = '#89B4FA'
+        brightBlack         = '#585B70'
+        brightBlue          = '#89B4FA'
+        brightCyan          = '#94E2D5'
+        brightGreen         = '#A6E3A1'
+        brightPurple        = '#F5C2E7'
+        brightRed           = '#F38BA8'
+        brightWhite         = '#A6ADC8'
+        brightYellow        = '#F9E2AF'
+        cyan                = '#89DCEB'
+        green               = '#A6E3A1'
+        purple              = '#CBA6F7'
+        red                 = '#F38BA8'
+        white               = '#BAC2DE'
+        yellow              = '#F9E2AF'
+    }
+
+    # ── PSSnips Terminal profile ───────────────────────────────────────────────
+    $profileEntry = [ordered]@{
+        guid         = '{d6f4b8e3-1c72-4a59-b031-7e5f93c2084a}'
+        name         = 'PSSnips TUI'
+        commandline  = 'pwsh.exe -NoProfile -Command "Import-Module PSSnips -ErrorAction Stop; Start-SnipManager"'
+        colorScheme  = 'PSSnips'
+        tabTitle     = 'PSSnips'
+        startingDirectory = '%USERPROFILE%'
+        hidden       = $false
+    }
+
+    if ($Font) {
+        $profileEntry['font'] = @{ face = $Font }
+    }
+
+    # ── Apply changes ─────────────────────────────────────────────────────────
+    $action = if ($existingProfile) { "Overwrite PSSnips profile in" } else { "Add PSSnips profile to" }
+
+    if ($PSCmdlet.ShouldProcess($settingsPath, $action)) {
+
+        # Update or add colour scheme
+        $schemeList  = [System.Collections.Generic.List[object]](@($settings.schemes))
+        $existingIdx = $null
+        for ($i = 0; $i -lt $schemeList.Count; $i++) {
+            if ($schemeList[$i].name -eq 'PSSnips') { $existingIdx = $i; break }
+        }
+        if ($existingIdx -ne $null) { $schemeList[$existingIdx] = $scheme }
+        else                        { $schemeList.Add($scheme) }
+        $settings['schemes'] = $schemeList.ToArray()
+
+        # Update or add profile
+        $profileList = [System.Collections.Generic.List[object]](@($settings.profiles.list))
+        $profIdx     = $null
+        for ($i = 0; $i -lt $profileList.Count; $i++) {
+            if ($profileList[$i].name -eq 'PSSnips TUI') { $profIdx = $i; break }
+        }
+        if ($profIdx -ne $null) { $profileList[$profIdx] = $profileEntry }
+        else                    { $profileList.Add($profileEntry) }
+        $settings.profiles['list'] = $profileList.ToArray()
+
+        # Add keybinding if requested and not already present
+        if ($Keybinding) {
+            $actionList = [System.Collections.Generic.List[object]](@($settings.actions))
+            $kbExists   = @($actionList) | Where-Object {
+                $_.keys -eq $Keybinding -and
+                ($_.command -is [hashtable] -or $_.command -is [System.Collections.Hashtable]) -and
+                $_.command.profile -eq 'PSSnips TUI'
+            }
+            if (-not $kbExists) {
+                $actionList.Add([ordered]@{
+                    command = [ordered]@{ action = 'newTab'; profile = 'PSSnips TUI' }
+                    keys    = $Keybinding
+                })
+            }
+            $settings['actions'] = $actionList.ToArray()
+        }
+
+        # Write back with 4-space indentation (matches WT defaults)
+        $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+
+        script:Out-Ok "PSSnips profile added to Windows Terminal."
+        Write-Host "  Settings : $settingsPath" -ForegroundColor DarkGray
+        if ($Keybinding) {
+            Write-Host "  Keybind  : $Keybinding  → opens PSSnips TUI in new tab" -ForegroundColor DarkGray
+        }
+        Write-Host "  Scheme   : PSSnips (Catppuccin Mocha-inspired dark theme)" -ForegroundColor DarkGray
+        Write-Host "  Font     : $Font" -ForegroundColor DarkGray
+    }
+
+    return $settingsPath
+}
+
 #endregion
 
 Export-ModuleMember -Function @(
@@ -4411,5 +4624,6 @@ Export-ModuleMember -Function @(
     'Start-SnipManager',
     'Get-SnipHistory', 'Restore-Snip', 'Test-Snip',
     'Invoke-SnipCLI',
-    'Get-StaleSnip', 'Get-SnipStats', 'Export-VSCodeSnips', 'Invoke-FuzzySnip'
+    'Get-StaleSnip', 'Get-SnipStats', 'Export-VSCodeSnips', 'Invoke-FuzzySnip',
+    'Add-SnipTerminalProfile'
 ) -Alias 'snip'

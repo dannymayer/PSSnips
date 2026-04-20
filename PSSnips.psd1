@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSSnips.psm1'
-    ModuleVersion     = '1.1.0'
+    ModuleVersion     = '1.1.1'
     GUID              = 'f3a7c2b1-84e9-4d56-a021-6c3e9f182b47'
     Author            = 'MayerMediaCo'
     CompanyName       = 'MayerMediaCo'
@@ -22,7 +22,8 @@
         'Install-PSSnips', 'Uninstall-PSSnips',
         'Start-SnipManager',
         'Invoke-SnipCLI',
-        'Get-StaleSnip', 'Get-SnipStats', 'Export-VSCodeSnips', 'Invoke-FuzzySnip'
+        'Get-StaleSnip', 'Get-SnipStats', 'Export-VSCodeSnips', 'Invoke-FuzzySnip',
+        'Add-SnipTerminalProfile'
     )
 
     AliasesToExport   = @('snip')
