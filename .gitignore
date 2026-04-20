@@ -4,6 +4,7 @@
 # PowerShell
 *.ps1xml
 !en-US/*.xml
+!PSSnips.Format.ps1xml
 
 # VS Code
 .vscode/
