@@ -1042,7 +1042,9 @@ function Get-Snip {
         [switch]$Content,   # when set, also search inside snippet file bodies
         [ValidateSet('Name','Modified','RunCount','LastRun')]
         [string]$SortBy = 'Name',
-        [switch]$Shared
+        [switch]$Shared,
+        [Parameter(ParameterSetName='List')]
+        [string]$Author = ''
     )
     script:InitEnv
     $idx = if ($Shared) {
@@ -1125,6 +1127,7 @@ function Get-Snip {
         $descValue    = if ($m.description) { $m.description } else { '' }
         $hashValue    = if ($m.ContainsKey('contentHash')) { $m['contentHash'] } else { '' }
         $sourceValue  = if ($Shared) { '[shared]' } else { 'local' }
+        $authorValue  = if ($m.ContainsKey('createdBy')) { $m['createdBy'] } else { '' }
         $obj = [pscustomobject]@{
             PSTypeName   = 'PSSnips.SnippetInfo'
             Name         = [string]$name
@@ -1142,10 +1145,12 @@ function Get-Snip {
             Runs         = [int]$runCount
             Pinned       = [bool]$pinned
             ContentHash  = [string]$hashValue
+            Author       = [string]$authorValue
         }
         $obj
     })
 
+    if ($Author) { $rows = @($rows | Where-Object { $_.Author -like "*$Author*" }) }
     if (-not $rows) { script:Out-Info "No snippets match that filter."; return }
     return $rows
 }
@@ -1376,10 +1381,12 @@ function New-Snip {
 
     Set-Content $filePath -Value $finalContent -Encoding UTF8
 
+    $snipAuthor = if ($env:USERNAME) { $env:USERNAME } else { 'unknown' }
     $idx.snippets[$Name] = @{
         name = $Name; description = $Description; language = $langExt
         tags = $Tags; created = (Get-Date -Format 'o'); modified = (Get-Date -Format 'o')
         gistId = $null; gistUrl = $null; contentHash = $newHash
+        createdBy = $snipAuthor; updatedBy = $snipAuthor
     }
     script:SaveIdx -Idx $idx
     script:UpdateFts -Name $Name
@@ -1523,10 +1530,12 @@ function Add-Snip {
         }
 
         Set-Content $fp -Value $content -Encoding UTF8
+        $addAuthor = if ($env:USERNAME) { $env:USERNAME } else { 'unknown' }
         $idx.snippets[$Name] = @{
             name = $Name; description = $Description; language = $langExt
             tags = $Tags; created = (Get-Date -Format 'o'); modified = (Get-Date -Format 'o')
             gistId = $null; gistUrl = $null; contentHash = $addHash
+            createdBy = $addAuthor; updatedBy = $addAuthor
         }
         script:SaveIdx -Idx $idx
         script:UpdateFts -Name $Name
@@ -1665,7 +1674,8 @@ function Edit-Snip {
     # Touch the modified timestampand recompute content hash; auto-sync CBH for PS1 files
     $idx = script:LoadIdx
     if ($idx.snippets.ContainsKey($Name)) {
-        $idx.snippets[$Name]['modified'] = Get-Date -Format 'o'
+        $idx.snippets[$Name]['modified']  = Get-Date -Format 'o'
+        $idx.snippets[$Name]['updatedBy'] = if ($env:USERNAME) { $env:USERNAME } else { 'unknown' }
         if (Test-Path $path) {
             $editedContent = Get-Content $path -Raw -Encoding UTF8
             $idx.snippets[$Name]['contentHash'] = script:GetContentHash -Content $editedContent
@@ -1800,8 +1810,13 @@ function Invoke-Snip {
         translation (C:\...) → /mnt/c/... is performed automatically. Falls back
         to native bash (Git Bash) then WSL1 bash.
         Run history (runCount, lastRun) is updated in index.json after execution.
+
+        Supports -WhatIf (ShouldProcess). When -WhatIf is specified in Single mode,
+        the snippet content (with placeholders resolved) is displayed and no execution
+        or audit-log write occurs. Chain mode passes -WhatIf through to each recursive
+        Invoke-Snip call automatically.
     #>
-    [CmdletBinding(DefaultParameterSetName='Single')]
+    [CmdletBinding(DefaultParameterSetName='Single', SupportsShouldProcess, ConfirmImpact = 'Medium')]
     param(
         [Parameter(Mandatory, Position=0, ParameterSetName='Single', HelpMessage='Name of the snippet to run')]
         [ValidateNotNullOrEmpty()]
@@ -1886,15 +1901,31 @@ function Invoke-Snip {
     $content = Get-Content $path -Raw -Encoding UTF8
 
     # Template variable substitution
-    $placeholders = @([regex]::Matches($content, '\{\{([A-Z0-9_]+)\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) |
-        ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+    $phMatches = [regex]::Matches($content, '\{\{([A-Z0-9_]+)(?::([^}]*))?\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $placeholders = @($phMatches | ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+    $phDefaults = @{}
+    foreach ($m in $phMatches) {
+        $phName = $m.Groups[1].Value.ToUpper()
+        if ($m.Groups[2].Success -and -not $phDefaults.ContainsKey($phName)) {
+            $phDefaults[$phName] = $m.Groups[2].Value
+        }
+    }
 
     $resolvedVars = @{}
     foreach ($k in $Variables.Keys) { $resolvedVars[$k.ToUpper()] = $Variables[$k] }
 
     foreach ($ph in $placeholders) {
         if (-not $resolvedVars.ContainsKey($ph)) {
-            $resolvedVars[$ph] = Read-Host "  Value for {{$ph}}"
+            $envVal = (Get-Item "env:$ph" -ErrorAction SilentlyContinue).Value
+            if ($envVal) {
+                $resolvedVars[$ph] = $envVal
+            } elseif ($phDefaults.ContainsKey($ph) -and $phDefaults[$ph] -ne '') {
+                $default = $phDefaults[$ph]
+                $userInput = Read-Host "  Value for {{$ph}} [$default]"
+                $resolvedVars[$ph] = if ($userInput -ne '') { $userInput } else { $default }
+            } else {
+                $resolvedVars[$ph] = Read-Host "  Value for {{$ph}}"
+            }
         }
     }
 
@@ -1903,11 +1934,24 @@ function Invoke-Snip {
     if ($placeholders.Count -gt 0) {
         $substituted = $content
         foreach ($ph in $placeholders) {
-            $substituted = $substituted -replace [regex]::Escape("{{$ph}}"), $resolvedVars[$ph]
+            $substituted = $substituted -replace "\{\{$ph(?::[^}]*)?\}\}", $resolvedVars[$ph]
         }
         $tmpFile = Join-Path $env:TEMP "pssnips_var_$([System.IO.Path]::GetRandomFileName()).$ext"
         Set-Content $tmpFile -Value $substituted -Encoding UTF8
         $runPath = $tmpFile
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($Name, "Execute snippet [$ext]")) {
+        $displayContent = if ($tmpFile) { Get-Content $tmpFile -Raw -Encoding UTF8 } else { $content }
+        Write-Host "What if: Executing snippet '$Name' [$ext]"
+        Write-Host 'Content:'
+        Write-Host $displayContent
+        if ($resolvedVars.Count -gt 0) {
+            $varDisplay = ($resolvedVars.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
+            Write-Host "Resolved variables: $varDisplay"
+        }
+        if ($tmpFile -and (Test-Path $tmpFile)) { Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue }
+        return
     }
 
     script:Out-Info "Running '$Name' [$ext] ..."
@@ -3171,13 +3215,29 @@ function Invoke-Gist {
         try {
             Set-Content $tmp -Value $body -Encoding UTF8 -ErrorAction Stop
             # Template variable substitution
-            $gistPlaceholders = @([regex]::Matches($body, '\{\{([A-Z0-9_]+)\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) |
-                ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+            $gistPhMatches = [regex]::Matches($body, '\{\{([A-Z0-9_]+)(?::([^}]*))?\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $gistPlaceholders = @($gistPhMatches | ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+            $gistPhDefaults = @{}
+            foreach ($m in $gistPhMatches) {
+                $phName = $m.Groups[1].Value.ToUpper()
+                if ($m.Groups[2].Success -and -not $gistPhDefaults.ContainsKey($phName)) {
+                    $gistPhDefaults[$phName] = $m.Groups[2].Value
+                }
+            }
             if ($gistPlaceholders.Count -gt 0) {
                 $gistVarContent = Get-Content $tmp -Raw -Encoding UTF8
                 foreach ($ph in $gistPlaceholders) {
-                    $val = Read-Host "  Value for {{$ph}}"
-                    $gistVarContent = $gistVarContent -replace [regex]::Escape("{{$ph}}"), $val
+                    $envVal = (Get-Item "env:$ph" -ErrorAction SilentlyContinue).Value
+                    if ($envVal) {
+                        $val = $envVal
+                    } elseif ($gistPhDefaults.ContainsKey($ph) -and $gistPhDefaults[$ph] -ne '') {
+                        $default = $gistPhDefaults[$ph]
+                        $userInput = Read-Host "  Value for {{$ph}} [$default]"
+                        $val = if ($userInput -ne '') { $userInput } else { $default }
+                    } else {
+                        $val = Read-Host "  Value for {{$ph}}"
+                    }
+                    $gistVarContent = $gistVarContent -replace "\{\{$ph(?::[^}]*)?\}\}", $val
                 }
                 Set-Content $tmp -Value $gistVarContent -Encoding UTF8
             }
@@ -5859,20 +5919,36 @@ spec:
     }
 
     # ── Fill placeholders ─────────────────────────────────────────────────────
-    $placeholders = @([regex]::Matches($templateContent, '\{\{([A-Z0-9_]+)\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase) |
-        ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+    $phMatches = [regex]::Matches($templateContent, '\{\{([A-Z0-9_]+)(?::([^}]*))?\}\}', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $placeholders = @($phMatches | ForEach-Object { $_.Groups[1].Value.ToUpper() } | Select-Object -Unique)
+    $phDefaults = @{}
+    foreach ($m in $phMatches) {
+        $phName = $m.Groups[1].Value.ToUpper()
+        if ($m.Groups[2].Success -and -not $phDefaults.ContainsKey($phName)) {
+            $phDefaults[$phName] = $m.Groups[2].Value
+        }
+    }
 
     $resolved = @{}
     foreach ($k in $Variables.Keys) { $resolved[$k.ToUpper()] = $Variables[$k] }
     foreach ($ph in $placeholders) {
         if (-not $resolved.ContainsKey($ph)) {
-            $resolved[$ph] = Read-Host "  Value for {{$ph}}"
+            $envVal = (Get-Item "env:$ph" -ErrorAction SilentlyContinue).Value
+            if ($envVal) {
+                $resolved[$ph] = $envVal
+            } elseif ($phDefaults.ContainsKey($ph) -and $phDefaults[$ph] -ne '') {
+                $default = $phDefaults[$ph]
+                $userInput = Read-Host "  Value for {{$ph}} [$default]"
+                $resolved[$ph] = if ($userInput -ne '') { $userInput } else { $default }
+            } else {
+                $resolved[$ph] = Read-Host "  Value for {{$ph}}"
+            }
         }
     }
 
     $filled = $templateContent
     foreach ($ph in $placeholders) {
-        $filled = $filled -replace [regex]::Escape("{{$ph}}"), $resolved[$ph]
+        $filled = $filled -replace "\{\{$ph(?::[^}]*)?\}\}", $resolved[$ph]
     }
 
     New-Snip -Name $Name -Language $templateExt -Content $filled -Force:$Force

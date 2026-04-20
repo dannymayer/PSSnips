@@ -35,6 +35,10 @@
           <TableColumnHeader>
             <Label>MODIFIED</Label>
           </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>AUTHOR</Label>
+            <Width>15</Width>
+          </TableColumnHeader>
         </TableHeaders>
         <TableRowEntries>
           <TableRowEntry>
@@ -59,6 +63,9 @@
               </TableColumnItem>
               <TableColumnItem>
                 <PropertyName>Modified</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <PropertyName>Author</PropertyName>
               </TableColumnItem>
             </TableColumnItems>
           </TableRowEntry>
