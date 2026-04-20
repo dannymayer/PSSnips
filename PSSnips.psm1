@@ -16,7 +16,8 @@
 #Requires -Version 7.0
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'  # Module scope — callers can override per-call
+# $ErrorActionPreference is intentionally NOT set at module scope to avoid bleeding
+# into the caller's session. Individual functions use -ErrorAction Stop/Continue as needed.
 
 #region ─── Module-Scoped Data ──────────────────────────────────────────────
 # Persistent paths, default settings, display colour map, and snippet templates
@@ -26,6 +27,9 @@ $script:Home      = Join-Path $env:USERPROFILE '.pssnips'
 $script:CfgFile   = Join-Path $script:Home 'config.json'
 $script:IdxFile   = Join-Path $script:Home 'index.json'
 $script:SnipDir   = Join-Path $script:Home 'snippets'
+
+# Advisory lock timeout (ms). Callers degrade gracefully on timeout rather than throw.
+$script:LockTimeoutMs = 3000
 
 $script:Defaults = [ordered]@{
     SnippetsDir     = $script:SnipDir
@@ -113,8 +117,27 @@ function script:LoadCfg {
 }
 
 function script:SaveCfg {
+    <#
+    .SYNOPSIS
+        Writes config.json atomically using a temp-file + rename pattern and an
+        advisory .lock file to prevent concurrent overwrites.
+    .NOTES
+        Acquires $script:CfgFile.lock (exclusive FileShare.None) before writing.
+        On lock timeout a Write-Warning is emitted and the write proceeds anyway so
+        the caller is never left without a config. The temp file is always cleaned up
+        even on error via try/finally.
+    #>
     param([hashtable]$Cfg)
-    $Cfg | ConvertTo-Json -Depth 5 | Set-Content $script:CfgFile -Encoding UTF8
+    $lockFile = "$script:CfgFile.lock"
+    $lock = script:AcquireLock -LockFile $lockFile
+    try {
+        $tmp = "$script:CfgFile.tmp"
+        $Cfg | ConvertTo-Json -Depth 5 | Set-Content -Path $tmp -Encoding UTF8
+        Move-Item -Path $tmp -Destination $script:CfgFile -Force
+    } finally {
+        script:ReleaseLock -Stream $lock -LockFile $lockFile
+        if (Test-Path "$script:CfgFile.tmp") { Remove-Item "$script:CfgFile.tmp" -ErrorAction SilentlyContinue }
+    }
 }
 
 function script:LoadIdx {
@@ -132,8 +155,29 @@ function script:LoadIdx {
 }
 
 function script:SaveIdx {
+    <#
+    .SYNOPSIS
+        Writes index.json atomically using a temp-file + rename pattern and an
+        advisory .lock file to prevent concurrent overwrites.
+    .NOTES
+        Acquires $script:IdxFile.lock (exclusive FileShare.None) before writing.
+        On lock timeout a Write-Warning is emitted and the write proceeds anyway so
+        the caller is never blocked indefinitely. The temp file is always cleaned up
+        even on error via try/finally.
+        For full read-modify-write atomicity, wrap the load+modify+save sequence in
+        script:WithIdxLock { ... } at the call site.
+    #>
     param([hashtable]$Idx)
-    $Idx | ConvertTo-Json -Depth 10 | Set-Content $script:IdxFile -Encoding UTF8
+    $lockFile = "$script:IdxFile.lock"
+    $lock = script:AcquireLock -LockFile $lockFile
+    try {
+        $tmp = "$script:IdxFile.tmp"
+        $Idx | ConvertTo-Json -Depth 10 | Set-Content -Path $tmp -Encoding UTF8
+        Move-Item -Path $tmp -Destination $script:IdxFile -Force
+    } finally {
+        script:ReleaseLock -Stream $lock -LockFile $lockFile
+        if (Test-Path "$script:IdxFile.tmp") { Remove-Item "$script:IdxFile.tmp" -ErrorAction SilentlyContinue }
+    }
 }
 
 function script:FindFile {
@@ -165,14 +209,41 @@ function script:LangColor {
     return 'White'
 }
 
+function script:GetGitHubToken {
+    if ($env:GITHUB_TOKEN) { return $env:GITHUB_TOKEN }
+    $cfg = script:LoadCfg
+    if ($cfg.ContainsKey('GitHubTokenSecure') -and $cfg.GitHubTokenSecure) {
+        try {
+            $secure = $cfg.GitHubTokenSecure | ConvertTo-SecureString
+            return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+            )
+        } catch { Write-Verbose "GetGitHubToken: DPAPI decryption failed — $($_.Exception.Message)" }
+    }
+    return $cfg.GitHubToken
+}
+
+function script:GetGitLabToken {
+    if ($env:GITLAB_TOKEN) { return $env:GITLAB_TOKEN }
+    $cfg = script:LoadCfg
+    if ($cfg.ContainsKey('GitLabTokenSecure') -and $cfg.GitLabTokenSecure) {
+        try {
+            $secure = $cfg.GitLabTokenSecure | ConvertTo-SecureString
+            return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+            )
+        } catch { Write-Verbose "GetGitLabToken: DPAPI decryption failed — $($_.Exception.Message)" }
+    }
+    return $cfg.GitLabToken
+}
+
 function script:CallGitHub {
     param(
         [string]$Endpoint,
         [string]$Method = 'GET',
         [hashtable]$Body = $null
     )
-    $cfg = script:LoadCfg
-    $tok = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $cfg.GitHubToken }
+    $tok = script:GetGitHubToken
     if (-not $tok) {
         throw "GitHub token not set. Run: snip config -GitHubToken <token>  (or set `$env:GITHUB_TOKEN)"
     }
@@ -194,7 +265,7 @@ function script:CallGitLab {
         [hashtable]$Body  = $null
     )
     $cfg   = script:LoadCfg
-    $tok   = if ($env:GITLAB_TOKEN) { $env:GITLAB_TOKEN } else { $cfg.GitLabToken }
+    $tok   = script:GetGitLabToken
     if (-not $tok) {
         throw "GitLab token not set. Run: snip config -GitLabToken <token>  (or set `$env:GITLAB_TOKEN)"
     }
@@ -205,8 +276,77 @@ function script:CallGitLab {
     return Invoke-RestMethod @p -ErrorAction Stop
 }
 
+function script:AcquireLock {
+    <#
+    .SYNOPSIS
+        Opens a .lock file with exclusive access. Returns a FileStream on success,
+        or $null after TimeoutMs if the file is held by another process.
+    .NOTES
+        Works on local NTFS and UNC paths. Callers must pass the stream to
+        script:ReleaseLock in a finally block.
+    #>
+    param(
+        [string]$LockFile,
+        [int]$TimeoutMs = $script:LockTimeoutMs,
+        [int]$RetryMs   = 50
+    )
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $stream = [System.IO.File]::Open(
+                $LockFile,
+                [System.IO.FileMode]::OpenOrCreate,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None)
+            return $stream
+        } catch [System.IO.IOException] {
+            Start-Sleep -Milliseconds $RetryMs
+        }
+    }
+    Write-Warning "PSSnips: could not acquire lock on '$LockFile' after ${TimeoutMs}ms — proceeding without lock."
+    return $null
+}
+
+function script:ReleaseLock {
+    <#
+    .SYNOPSIS
+        Closes and disposes a lock FileStream and removes the .lock file.
+    #>
+    param(
+        [System.IO.FileStream]$Stream,
+        [string]$LockFile
+    )
+    if ($null -ne $Stream) {
+        $Stream.Close()
+        $Stream.Dispose()
+        Remove-Item -Path $LockFile -ErrorAction SilentlyContinue
+    }
+}
+
+function script:WithIdxLock {
+    <#
+    .SYNOPSIS
+        Acquires the index advisory lock, runs a scriptblock, then releases the lock.
+        Callers performing LoadIdx → modify → SaveIdx can wrap the sequence here for
+        full read-modify-write atomicity.
+    #>
+    param([scriptblock]$Action)
+    $lockFile = "$script:IdxFile.lock"
+    $lock = script:AcquireLock -LockFile $lockFile
+    try {
+        & $Action
+    } finally {
+        script:ReleaseLock -Stream $lock -LockFile $lockFile
+    }
+}
+
 function script:InitEnv {
     script:EnsureDirs
+
+    # Clean up any stale .lock files left by a previous crashed session.
+    Get-Item "$script:SnipDir\*.lock", "$script:IdxFile.lock", "$script:CfgFile.lock" `
+        -ErrorAction SilentlyContinue | Remove-Item -ErrorAction SilentlyContinue
+
     if (-not (Test-Path $script:CfgFile)) {
         $def = @{}; $script:Defaults.GetEnumerator() | ForEach-Object { $def[$_.Key] = $_.Value }
         script:SaveCfg -Cfg $def
@@ -306,7 +446,8 @@ function Get-SnipConfig {
     Write-Host "  $('─' * 44)" -ForegroundColor DarkGray
     foreach ($k in $cfg.Keys) {
         $v = $cfg[$k]
-        if ($k -eq 'GitHubToken' -and $v) { $v = ('*' * [Math]::Max(0,$v.Length-4)) + $v.Substring([Math]::Max(0,$v.Length-4)) }
+        if ($k -in 'GitHubToken','GitLabToken' -and $v) { $v = '[plain-text]' }
+        if ($k -in 'GitHubTokenSecure','GitLabTokenSecure' -and $v) { $v = '[DPAPI encrypted]' }
         if ($v -is [array]) { $v = $v -join ', ' }
         Write-Host ("  {0,-22}" -f $k) -ForegroundColor DarkCyan -NoNewline
         Write-Host " $v"
@@ -332,7 +473,26 @@ function Set-SnipConfig {
 
     .PARAMETER GitHubToken
         A GitHub personal access token (PAT) with the 'gist' scope. Optional.
-        Required for all Gist operations. Can also be supplied via $env:GITHUB_TOKEN.
+        Required for all Gist operations. Stored in plain text unless -SecureStorage
+        is also specified. Token resolution priority at runtime:
+          $env:GITHUB_TOKEN  >  GitHubTokenSecure (DPAPI)  >  GitHubToken (plain-text)
+        WARNING: tokens written to config.json are not encrypted by default.
+        Consider using $env:GITHUB_TOKEN for improved security.
+
+    .PARAMETER GitLabToken
+        A GitLab personal access token with 'api' scope. Optional.
+        Required for all GitLab Snippet operations. Stored in plain text unless
+        -SecureStorage is also specified. Token resolution priority at runtime:
+          $env:GITLAB_TOKEN  >  GitLabTokenSecure (DPAPI)  >  GitLabToken (plain-text)
+        WARNING: tokens written to config.json are not encrypted by default.
+        Consider using $env:GITLAB_TOKEN for improved security.
+
+    .PARAMETER SecureStorage
+        When specified, tokens are encrypted with Windows DPAPI before being written
+        to config.json (stored under GitHubTokenSecure / GitLabTokenSecure). DPAPI
+        encryption is scoped to the current machine and user account — the encrypted
+        value cannot be decrypted on a different machine or by a different user.
+        If DPAPI is unavailable, falls back to plain-text storage with a warning.
 
     .PARAMETER GitHubUsername
         Your GitHub username. Optional. Used to list your own Gists when calling
@@ -358,7 +518,12 @@ function Set-SnipConfig {
     .EXAMPLE
         Set-SnipConfig -GitHubToken 'ghp_abc123' -GitHubUsername 'octocat'
 
-        Saves GitHub credentials to enable Gist integration.
+        Saves GitHub credentials to enable Gist integration (plain-text, with warning).
+
+    .EXAMPLE
+        Set-SnipConfig -GitHubToken 'ghp_abc123' -SecureStorage
+
+        Saves the token encrypted with DPAPI (machine+user scoped).
 
     .EXAMPLE
         Set-SnipConfig -DefaultLanguage py -ConfirmDelete $false
@@ -373,22 +538,51 @@ function Set-SnipConfig {
 
     .NOTES
         Settings are persisted to ~/.pssnips/config.json as UTF-8 JSON.
-        GitHub tokens are stored in plain text; consider using $env:GITHUB_TOKEN
-        as an alternative for improved security.
+        Use $env:GITHUB_TOKEN or $env:GITLAB_TOKEN for the most secure token handling,
+        as environment variables are never written to disk.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [ValidateNotNullOrEmpty()][string]$Editor,
         [ValidateNotNullOrEmpty()][string]$GitHubToken,
+        [ValidateNotNullOrEmpty()][string]$GitLabToken,
         [ValidateNotNullOrEmpty()][string]$GitHubUsername,
         [ValidateNotNullOrEmpty()][string]$SnippetsDir,
         [ValidateNotNullOrEmpty()][string]$DefaultLanguage,
-        [nullable[bool]]$ConfirmDelete
+        [nullable[bool]]$ConfirmDelete,
+        [switch]$SecureStorage
     )
     script:InitEnv
     $cfg = script:LoadCfg
     if ($Editor)          { $cfg['Editor']          = $Editor          }
-    if ($GitHubToken)     { $cfg['GitHubToken']     = $GitHubToken     }
+    if ($PSBoundParameters.ContainsKey('GitHubToken')) {
+        Write-Warning "GitHub tokens stored in config.json are not encrypted. Consider using `$env:GITHUB_TOKEN instead."
+        if ($SecureStorage) {
+            try {
+                $cfg['GitHubTokenSecure'] = $GitHubToken | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString
+                $cfg.Remove('GitHubToken')
+            } catch {
+                Write-Warning "DPAPI encryption failed; falling back to plain-text storage. Error: $($_.Exception.Message)"
+                $cfg['GitHubToken'] = $GitHubToken
+            }
+        } else {
+            $cfg['GitHubToken'] = $GitHubToken
+        }
+    }
+    if ($PSBoundParameters.ContainsKey('GitLabToken')) {
+        Write-Warning "GitLab tokens stored in config.json are not encrypted. Consider using `$env:GITLAB_TOKEN instead."
+        if ($SecureStorage) {
+            try {
+                $cfg['GitLabTokenSecure'] = $GitLabToken | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString
+                $cfg.Remove('GitLabToken')
+            } catch {
+                Write-Warning "DPAPI encryption failed; falling back to plain-text storage. Error: $($_.Exception.Message)"
+                $cfg['GitLabToken'] = $GitLabToken
+            }
+        } else {
+            $cfg['GitLabToken'] = $GitLabToken
+        }
+    }
     if ($GitHubUsername)  { $cfg['GitHubUsername']  = $GitHubUsername  }
     if ($SnippetsDir)     { $cfg['SnippetsDir']     = $SnippetsDir     }
     if ($DefaultLanguage) { $cfg['DefaultLanguage'] = $DefaultLanguage }
@@ -2767,7 +2961,7 @@ function Publish-Snip {
     if ($PSCmdlet.ShouldProcess($destFile, "Publish snippet '$Name'")) {
         Copy-Item $srcPath $destFile -Force
 
-        # Update shared-index.json
+        # Update shared-index.json with advisory lock + atomic write
         $sharedIdxFile = Join-Path $sharedDir 'shared-index.json'
         $sharedIdx = if (Test-Path $sharedIdxFile) {
             try {
@@ -2781,7 +2975,17 @@ function Publish-Snip {
         } else { @{ snippets = @{} } }
 
         $sharedIdx['snippets'][$Name] = $idx.snippets[$Name]
-        $sharedIdx | ConvertTo-Json -Depth 10 | Set-Content $sharedIdxFile -Encoding UTF8
+
+        $sharedLockFile = "$sharedIdxFile.lock"
+        $sharedLock = script:AcquireLock -LockFile $sharedLockFile
+        try {
+            $sharedTmp = "$sharedIdxFile.tmp"
+            $sharedIdx | ConvertTo-Json -Depth 10 | Set-Content -Path $sharedTmp -Encoding UTF8
+            Move-Item -Path $sharedTmp -Destination $sharedIdxFile -Force
+        } finally {
+            script:ReleaseLock -Stream $sharedLock -LockFile $sharedLockFile
+            if (Test-Path "$sharedIdxFile.tmp") { Remove-Item "$sharedIdxFile.tmp" -ErrorAction SilentlyContinue }
+        }
         script:Out-OK "Published '$Name' to shared storage: $destFile"
     }
 }

@@ -18,7 +18,9 @@ BeforeAll {
         $script:CfgFile = Join-Path $BaseDir 'config.json'
         $script:IdxFile = Join-Path $BaseDir 'index.json'
         $script:SnipDir = $SnipDir
-        $script:Defaults['SnippetsDir'] = $SnipDir
+        # Seed config.json with the test SnippetsDir before InitEnv runs so it
+        # doesn't write module-level defaults (which still point to the real path).
+        @{ SnippetsDir = $SnipDir } | ConvertTo-Json | Set-Content $script:CfgFile -Encoding UTF8
         script:InitEnv
     } $script:TestRoot $script:TestSnipDir
 

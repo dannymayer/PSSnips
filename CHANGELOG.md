@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.2] — 2026-04-20
+
+### Fixed
+
+- **File locking on `index.json` and `config.json`** — `SaveIdx` and `SaveCfg`
+  now acquire an advisory `.lock` file (with 3 s timeout) and write via a
+  temp-file → atomic rename, eliminating silent data loss when two sessions
+  write concurrently. Same protection applied to `shared-index.json` in
+  `Publish-Snip`. Stale `.lock` files are cleaned up on module load.
+- **Token security warning** — `Set-SnipConfig -GitHubToken` / `-GitLabToken`
+  now emits `Write-Warning` directing users to environment variables instead of
+  plain-text storage. New `-SecureStorage` switch encrypts the token with
+  Windows DPAPI (`ConvertFrom-SecureString`) and stores it under a `*Secure`
+  key; token resolution priority is `$env:` → DPAPI → plain-text.
+- **`Get-SnipConfig` token masking** — stored tokens are now displayed as
+  `[plain-text]` or `[DPAPI encrypted]` instead of the raw value.
+- **`$ErrorActionPreference = 'Stop'` removed from module scope** — setting
+  this at module scope could affect the caller's session; per-function
+  `try/catch` and `-ErrorAction` flags are sufficient.
+- **Test isolation** — `PSSnips.Tests.ps1` no longer directly mutates
+  `$script:Defaults['SnippetsDir']`; the test `BeforeAll` now pre-seeds
+  `config.json` so `script:InitEnv` picks up the temp path via `LoadCfg`.
+
+---
+
 ## [1.0.1] — 2026-04-20
 
 ### Fixed
@@ -95,5 +120,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[1.0.2]: https://github.com/dannymayer/PSSnips/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/dannymayer/PSSnips/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/dannymayer/PSSnips/releases/tag/v1.0.0
