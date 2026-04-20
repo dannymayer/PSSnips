@@ -5,9 +5,9 @@
     Author            = 'MayerMediaCo'
     CompanyName       = 'MayerMediaCo'
     Copyright         = 'Copyright (c) 2026 MayerMediaCo. Licensed under the MIT License.'
-    Description       = 'A terminal-first PowerShell snippet manager with GitHub Gist and GitLab integration. Store, search, tag, pin, version, edit, and run local code snippets. Features shared team storage, backup/restore, PSScriptAnalyzer lint, template variables, snippet chaining, and an interactive TUI. Optimised for Windows PowerShell 5.1+ and PowerShell 7+.'
-    PowerShellVersion = '5.1'
-    CompatiblePSEditions = @('Desktop', 'Core')
+    Description       = 'A terminal-first PowerShell snippet manager with GitHub Gist and GitLab integration. Store, search, tag, pin, version, edit, and run local code snippets. Features shared team storage, backup/restore, PSScriptAnalyzer lint, template variables, snippet chaining, and an interactive TUI. Requires PowerShell 7.0 or later.'
+    PowerShellVersion = '7.0'
+    CompatiblePSEditions = @('Core')
 
     FunctionsToExport = @(
         'Initialize-PSSnips',

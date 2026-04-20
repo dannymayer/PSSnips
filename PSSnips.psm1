@@ -4,7 +4,7 @@
     Version : 1.0.0
     Author  : PSSnips Contributors
     License : MIT
-    Requires: PowerShell 5.1+, Windows
+    Requires: PowerShell 7.0+, Windows
     Purpose : Terminal-first snippet manager with GitHub Gist integration.
               Store, search, edit (Microsoft Edit / nvim / VS Code), run, and
               sync local code snippets. Supports PS1, Python, JS, Batch, Bash,
@@ -13,7 +13,7 @@
               snip         # interactive TUI
               snip help    # command reference
 #>
-#Requires -Version 5.1
+#Requires -Version 7.0
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'  # Module scope — callers can override per-call

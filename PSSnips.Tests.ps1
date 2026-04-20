@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 # PSSnips.Tests.ps1 — Pester 5 test suite
 #
 # Run: Invoke-Pester -Path .\PSSnips.Tests.ps1 -Output Detailed

@@ -11,17 +11,11 @@ env:
 
 jobs:
   test:
-    strategy:
-      matrix:
-        shell: [powershell, pwsh]   # powershell = Windows PS 5.1, pwsh = PS 7.x
-      fail-fast: false
-
     runs-on: windows-latest
 
-    # Set shell once at the job level — step-level shell: doesn't support matrix expressions
     defaults:
       run:
-        shell: ${{ matrix.shell }} {0}
+        shell: pwsh {0}
 
     steps:
       - name: Checkout
@@ -75,5 +69,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.shell }}
+          name: test-results-pwsh
           path: TestResults.xml
