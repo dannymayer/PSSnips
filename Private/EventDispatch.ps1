@@ -1,4 +1,4 @@
-# PSSnips — Internal event dispatch helper.
+﻿# PSSnips — Internal event dispatch helper.
 function script:Invoke-SnipEvent {
     <#
     .SYNOPSIS

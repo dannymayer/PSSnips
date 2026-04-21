@@ -1,4 +1,4 @@
-# PSSnips — Analytics, statistics, scheduling, and event-registry functions.
+﻿# PSSnips — Analytics, statistics, scheduling, and event-registry functions.
 # Get-StaleSnip, Get-SnipStats, Export-VSCodeSnips, Invoke-FuzzySnip
 
 function Get-StaleSnip {

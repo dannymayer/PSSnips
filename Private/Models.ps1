@@ -1,4 +1,4 @@
-# PSSnips — Core data model classes
+﻿# PSSnips — Core data model classes
 
 class SnippetMetadata {
     [string]             $Name        = ''

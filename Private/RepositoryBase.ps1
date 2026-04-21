@@ -1,4 +1,4 @@
-# PSSnips — Abstract repository base class
+﻿# PSSnips — Abstract repository base class
 
 class SnipRepositoryBase {
     # Subclasses override methods they implement.

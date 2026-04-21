@@ -1,4 +1,4 @@
-# PSSnips — Backup and restore operations.
+﻿# PSSnips — Backup and restore operations.
 # Export-SnipCollection and Import-SnipCollection provide portable ZIP backups
 # of the local snippet collection, enabling migration between machines and
 # safe archiving before major changes.

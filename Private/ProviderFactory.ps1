@@ -1,4 +1,4 @@
-# PSSnips — Provider factory helper
+﻿# PSSnips — Provider factory helper
 
 function script:Get-RemoteProvider {
     [CmdletBinding()]

@@ -1,4 +1,4 @@
-# PSSnips — Syntax highlighting helpers (ANSI tokenizer and bat).
+﻿# PSSnips — Syntax highlighting helpers (ANSI tokenizer and bat).
 function script:ConvertTo-HighlightedPS {
     <#
     .SYNOPSIS

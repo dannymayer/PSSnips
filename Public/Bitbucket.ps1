@@ -1,4 +1,4 @@
-# PSSnips — Bitbucket Snippets integration.
+﻿# PSSnips — Bitbucket Snippets integration.
 function Get-BitbucketSnipList {
     <#
     .SYNOPSIS

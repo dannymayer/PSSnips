@@ -1,4 +1,4 @@
-# PSSnips — Get-SnipConfig and Set-SnipConfig: read/write module settings.
+﻿# PSSnips — Get-SnipConfig and Set-SnipConfig: read/write module settings.
 # Functions to read and write the PSSnips config.json settings file.
 
 function Get-SnipConfig {
@@ -283,7 +283,9 @@ function Set-SnipConfig {
     if ($null -ne $ConfirmDelete) { $cfg['ConfirmDelete']     = $ConfirmDelete        }
     if ($BitbucketUsername)    { $cfg['BitbucketUsername']    = $BitbucketUsername    }
     if ($BitbucketAppPassword) { $cfg['BitbucketAppPassword'] = $BitbucketAppPassword }
-    script:SaveCfg -Cfg $cfg -Scope $Scope
-    script:Out-OK "Configuration saved."
+    if ($PSCmdlet.ShouldProcess("$Scope config", 'Save configuration')) {
+        script:SaveCfg -Cfg $cfg -Scope $Scope
+        script:Out-OK "Configuration saved."
+    }
 }
 

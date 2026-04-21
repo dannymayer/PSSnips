@@ -1,4 +1,4 @@
-# PSSnips — Bitbucket Snippets remote provider
+﻿# PSSnips — Bitbucket Snippets remote provider
 #
 # Bitbucket uses PSCredential (Basic auth) rather than a bearer token, and
 # its snippet create/update API requires multipart/form-data, so CreateRemote

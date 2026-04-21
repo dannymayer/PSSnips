@@ -1,4 +1,4 @@
-# PSSnips — Credential retrieval helpers (GitHub, GitLab, Bitbucket).
+﻿# PSSnips — Credential retrieval helpers (GitHub, GitLab, Bitbucket).
 function script:GetGitHubToken {
     if ($env:GITHUB_TOKEN) { return $env:GITHUB_TOKEN }
     $cfg = script:LoadCfg

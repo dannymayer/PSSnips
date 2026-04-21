@@ -1,4 +1,4 @@
-# PSSnips — Snippet template management (New-SnipFromTemplate, Get-SnipTemplate).
+﻿# PSSnips — Snippet template management (New-SnipFromTemplate, Get-SnipTemplate).
 function New-SnipFromTemplate {
     <#
     .SYNOPSIS

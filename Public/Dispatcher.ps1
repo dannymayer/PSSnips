@@ -1,4 +1,4 @@
-# PSSnips — Invoke-SnipCLI dispatcher and snip alias.
+﻿# PSSnips — Invoke-SnipCLI dispatcher and snip alias.
 # The 'snip' function is the primary CLI entry point. It routes sub-commands
 # using a regex switch, mapping short aliases (ls, rm, cp, etc.) to the full
 # public functions above. Named switches (-Language, -Tags, etc.) are forwarded

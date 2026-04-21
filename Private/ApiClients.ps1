@@ -1,4 +1,4 @@
-# PSSnips — Low-level HTTP client wrappers for GitHub and GitLab APIs.
+﻿# PSSnips — Low-level HTTP client wrappers for GitHub and GitLab APIs.
 function script:CallGitHub {
     param(
         [string]$Endpoint,

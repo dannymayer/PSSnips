@@ -1,4 +1,4 @@
-# PSSnips — Full-text search index helpers.
+﻿# PSSnips — Full-text search index helpers.
 function script:SearchSnipContent {
     # Returns $true if the snippet file body contains $SearchString (case-insensitive).
     # Falls back to direct file read when a FTS cache entry is not yet present.

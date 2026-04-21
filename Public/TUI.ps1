@@ -1,4 +1,4 @@
-# PSSnips — Interactive terminal UI (Start-SnipManager).
+﻿# PSSnips — Interactive terminal UI (Start-SnipManager).
 # Full-screen terminal UI (TUI) built on raw console key input.
 # Uses [Console]::SetCursorPosition for in-place screen redraws and
 # $Host.UI.RawUI.ReadKey for single-keypress navigation without Enter.

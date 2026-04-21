@@ -1,4 +1,4 @@
-# PSSnips — File-system and editor helpers.
+﻿# PSSnips — File-system and editor helpers.
 function script:EnsureDirs {
     $cfg = script:LoadCfg
     foreach ($d in @($script:Home, $cfg.SnippetsDir, (Join-Path $script:Home 'history'))) {

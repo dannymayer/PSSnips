@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+﻿#Requires -Version 7.0
 
 Set-StrictMode -Version Latest
 # $ErrorActionPreference is intentionally NOT set at module scope to avoid bleeding

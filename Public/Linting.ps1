@@ -1,4 +1,4 @@
-# PSSnips — Snippet linting via PSScriptAnalyzer (Invoke-SnipLint, Test-SnipLint).
+﻿# PSSnips — Snippet linting via PSScriptAnalyzer (Invoke-SnipLint, Test-SnipLint).
 function Invoke-SnipLint {
     <#
     .SYNOPSIS

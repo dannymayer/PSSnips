@@ -1,4 +1,4 @@
-# PSSnips — GitLab Snippets integration.
+﻿# PSSnips — GitLab Snippets integration.
 
 function Get-GitLabSnipList {
     <#

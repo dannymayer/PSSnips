@@ -1,4 +1,4 @@
-# PSSnips — JSON-backed snippet repository implementation
+﻿# PSSnips — JSON-backed snippet repository implementation
 
 class JsonSnipRepository : SnipRepositoryBase {
     hidden [string]    $BasePath

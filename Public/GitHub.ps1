@@ -1,4 +1,4 @@
-# PSSnips — GitHub Gist integration.
+﻿# PSSnips — GitHub Gist integration.
 # Functions that interact with the GitHub Gist API.
 # All API calls require a GitHub personal access token with the 'gist' scope,
 # set via Set-SnipConfig -GitHubToken or the $env:GITHUB_TOKEN environment variable.

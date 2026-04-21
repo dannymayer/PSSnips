@@ -1,4 +1,4 @@
-# PSSnips — Shell profile integration (Install-PSSnips, Uninstall-PSSnips).
+﻿# PSSnips — Shell profile integration (Install-PSSnips, Uninstall-PSSnips).
 
 function Install-PSSnips {
     <#

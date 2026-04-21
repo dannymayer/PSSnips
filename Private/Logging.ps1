@@ -1,4 +1,4 @@
-# PSSnips — Console output helpers (banner and status indicators).
+﻿# PSSnips — Console output helpers (banner and status indicators).
 function script:Out-Banner {
     $lines = @(
 "   ___  __  __       _           ",

@@ -1,4 +1,4 @@
-# PSSnips — Shared snippet storage (Publish-Snip, Sync-SharedSnips).
+﻿# PSSnips — Shared snippet storage (Publish-Snip, Sync-SharedSnips).
 
 function Publish-Snip {
     <#

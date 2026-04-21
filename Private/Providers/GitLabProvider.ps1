@@ -1,4 +1,4 @@
-# PSSnips — GitLab Snippets remote provider
+﻿# PSSnips — GitLab Snippets remote provider
 #
 # API calls are delegated via $script:_CallGitLabDelegate so class methods can
 # reach the module-scoped script:CallGitLab function.

@@ -1,4 +1,4 @@
-# PSSnips — GitHub Gist remote provider
+﻿# PSSnips — GitHub Gist remote provider
 #
 # API calls are delegated via $script:_CallGitHubDelegate so class methods can
 # reach the module-scoped script:CallGitHub function.

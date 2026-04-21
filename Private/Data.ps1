@@ -1,4 +1,4 @@
-# PSSnips — Module-scoped variables: paths, defaults, colour map, and templates.
+﻿# PSSnips — Module-scoped variables: paths, defaults, colour map, and templates.
 # Persistent paths, default settings, display colour map, and snippet templates
 # that are shared across all functions in the module.
 

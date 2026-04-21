@@ -1,4 +1,4 @@
-# PSSnips — Audit logging and shared-directory helpers.
+﻿# PSSnips — Audit logging and shared-directory helpers.
 function script:Write-AuditLog {
     param(
         [string]$Operation,

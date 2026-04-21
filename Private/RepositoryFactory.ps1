@@ -1,4 +1,4 @@
-# PSSnips — Repository factory helper
+﻿# PSSnips — Repository factory helper
 
 function script:New-SnipRepository {
     [CmdletBinding()]

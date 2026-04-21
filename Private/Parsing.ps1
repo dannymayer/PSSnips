@@ -1,4 +1,4 @@
-# PSSnips — Comment-Based Help parser.
+﻿# PSSnips — Comment-Based Help parser.
 function script:ParseCBH {
     <#
     .SYNOPSIS

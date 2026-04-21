@@ -1,4 +1,4 @@
-# PSSnips — Config/index persistence, file locking, and environment initialisation.
+﻿# PSSnips — Config/index persistence, file locking, and environment initialisation.
 function script:LoadCfg {
     if (-not $script:CfgDirty -and $null -ne $script:CfgCache) { return $script:CfgCache }
 

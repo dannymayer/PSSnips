@@ -1,4 +1,4 @@
-# PSSnips — Tab-completion registrations for snippet name parameters.
+﻿# PSSnips — Tab-completion registrations for snippet name parameters.
 # Tab-completion for snippet names on all relevant commands.
 
 $snipNameCompleter = {

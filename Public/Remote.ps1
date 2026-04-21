@@ -1,4 +1,4 @@
-# PSSnips — Unified remote provider public API
+﻿# PSSnips — Unified remote provider public API
 
 function Get-RemoteSnip {
     <#

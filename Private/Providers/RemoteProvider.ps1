@@ -1,4 +1,4 @@
-# PSSnips — Abstract remote provider base class
+﻿# PSSnips — Abstract remote provider base class
 
 class RemoteProvider {
     [string] $ProviderName = ''

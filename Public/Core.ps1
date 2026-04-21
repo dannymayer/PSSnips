@@ -1,4 +1,4 @@
-# PSSnips — Core snippet CRUD: Get-Snip, New-Snip, Remove-Snip, Edit-Snip, etc.
+﻿# PSSnips — Core snippet CRUD: Get-Snip, New-Snip, Remove-Snip, Edit-Snip, etc.
 # Create, read, update, and delete operations for local snippet files.
 # Each function maintains both the snippet file on disk and the index.json metadata.
 
@@ -1643,7 +1643,9 @@ function Set-SnipTag {
     if ($Pin)   { $idx.snippets[$Name].Pinned = $true  }
     if ($Unpin) { $idx.snippets[$Name].Pinned = $false }
 
-    script:SaveIdx -Idx $idx
-    script:Out-OK "Tags updated: $($current -join ', ')"
+    if ($PSCmdlet.ShouldProcess($Name, 'Update tags')) {
+        script:SaveIdx -Idx $idx
+        script:Out-OK "Tags updated: $($current -join ', ')"
+    }
 }
 

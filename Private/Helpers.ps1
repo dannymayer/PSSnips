@@ -1,4 +1,4 @@
-# PSSnips — Miscellaneous helpers: content hashing and version history.
+﻿# PSSnips — Miscellaneous helpers: content hashing and version history.
 function script:GetContentHash {
     param([string]$Content)
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
