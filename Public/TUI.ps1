@@ -45,7 +45,9 @@ function Start-SnipManager {
         redirected. The TUI shows up to 20 snippets per page; use [/] to filter
         when the collection exceeds 20 items.
     #>
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Start-SnipManager launches a read-only interactive TUI and does not change system state directly.')]
     param()
     script:InitEnv
 
@@ -59,11 +61,9 @@ function Start-SnipManager {
         param([hashtable]$Idx, [string]$q)
         $allItems = @(foreach ($n in ($Idx.snippets.Keys | Sort-Object)) {
             $m = $Idx.snippets[$n]
-        # @($m.tags) guard: PS 5.1 may return a bare string for single-element arrays
-            if (-not $q -or $n -like "*$q*" -or ($m.description -like "*$q*") -or
-                ((@($m.tags) -join ',') -like "*$q*")) {
-                $isPinned = $m.ContainsKey('pinned') -and $m['pinned'] -eq $true
-                [pscustomobject]@{ Name = $n; Meta = $m; Pinned = $isPinned }
+            if (-not $q -or $n -like "*$q*" -or ($m.Description -like "*$q*") -or
+                (($m.Tags -join ',') -like "*$q*")) {
+                [pscustomobject]@{ Name = $n; Meta = $m; Pinned = $m.Pinned }
             }
         })
         # Pinned snippets float to the top
