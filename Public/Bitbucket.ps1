@@ -33,25 +33,51 @@ function Get-BitbucketSnipList {
         [string]$Role      = ''
     )
     script:InitEnv
-    $cred = script:GetBitbucketCreds
-    if (-not $cred) { return }
+    $p = script:Get-RemoteProvider -Name 'Bitbucket'
+    if (-not $p.IsConfigured()) { script:Out-Warn 'Bitbucket credentials not set. Run: Set-SnipConfig -BitbucketUsername <user> -BitbucketAppPassword <app-pwd>  (or set $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD)'; return }
 
-    $base      = 'https://api.bitbucket.org/2.0'
-    $workspace = if ($Workspace) { $Workspace } else { $cred.UserName }
-    $query     = if ($Role) { "?role=$Role" } else { '' }
-    $uri       = "$base/snippets/$workspace$query"
+    $effectiveWs = if ($Workspace) { $Workspace } else { $null }
+    if ($effectiveWs) {
+        # Use a workspace-specific provider instance
+        $cred = script:GetBitbucketCreds
+        if (-not $cred) { return }
+        $p = [BitbucketProvider]::new($cred, $effectiveWs)
+    }
 
-    $snips = [System.Collections.Generic.List[object]]::new()
     try {
-        do {
-            $page = Invoke-RestMethod -Uri $uri -Method GET -Credential $cred `
-                        -Headers @{ 'User-Agent' = 'PSSnips/1.0' } -ErrorAction Stop
-            foreach ($v in $page.values) { $snips.Add($v) }
-            $uri = if ($page.next) { $page.next } else { $null }
-        } while ($uri)
+        $snips = @($p.ListRemote(''))
     } catch {
         script:Out-Err "Bitbucket API error: $_"
         return
+    }
+    if ($Role) {
+        # Re-query with role filter since the provider uses a simple endpoint
+        $cred = script:GetBitbucketCreds
+        if (-not $cred) { return }
+        $uri  = "https://api.bitbucket.org/2.0/snippets/$(if ($Workspace) { $Workspace } else { $cred.UserName })?role=$Role"
+        $rawSnips = [System.Collections.Generic.List[object]]::new()
+        try {
+            do {
+                $page = Invoke-RestMethod -Uri $uri -Method GET -Credential $cred `
+                            -Headers @{ 'User-Agent' = 'PSSnips/1.0' } -ErrorAction Stop
+                foreach ($v in $page.values) { $rawSnips.Add($v) }
+                $uri = if ($page.next) { $page.next } else { $null }
+            } while ($uri)
+        } catch {
+            script:Out-Err "Bitbucket API error: $_"
+            return
+        }
+        $snips = @($rawSnips | ForEach-Object {
+            [PSCustomObject]@{
+                Id        = $_.id
+                Title     = $_.title
+                Scm       = if ($_.scm) { $_.scm } else { 'git' }
+                IsPrivate = $_.is_private
+                CreatedOn = $_.created_on
+                UpdatedOn = $_.updated_on
+                Links     = $_.links
+            }
+        })
     }
 
     if ($snips.Count -eq 0) { script:Out-Info 'No Bitbucket snippets found.'; return }
@@ -60,24 +86,14 @@ function Get-BitbucketSnipList {
     Write-Host ("  {0,-12} {1,-40} {2,-22} {3,-22} {4}" -f 'ID','TITLE','CREATED','UPDATED','PRIVATE') -ForegroundColor DarkCyan
     Write-Host "  $('─' * 105)" -ForegroundColor DarkGray
     foreach ($s in $snips) {
-        $created  = if ($s.created_on)  { [datetime]$s.created_on  | Get-Date -Format 'yyyy-MM-dd HH:mm' } else { '' }
-        $updated  = if ($s.updated_on)  { [datetime]$s.updated_on  | Get-Date -Format 'yyyy-MM-dd HH:mm' } else { '' }
-        $isPriv   = if ($s.is_private)  { 'Yes' } else { 'No' }
-        Write-Host ("  {0,-12} {1,-40} {2,-22} {3,-22} {4}" -f $s.id, $s.title, $created, $updated, $isPriv) -ForegroundColor Gray
+        $created  = if ($s.CreatedOn)  { [datetime]$s.CreatedOn  | Get-Date -Format 'yyyy-MM-dd HH:mm' } else { '' }
+        $updated  = if ($s.UpdatedOn)  { [datetime]$s.UpdatedOn  | Get-Date -Format 'yyyy-MM-dd HH:mm' } else { '' }
+        $isPriv   = if ($s.IsPrivate)  { 'Yes' } else { 'No' }
+        Write-Host ("  {0,-12} {1,-40} {2,-22} {3,-22} {4}" -f $s.Id, $s.Title, $created, $updated, $isPriv) -ForegroundColor Gray
     }
     Write-Host ''
 
-    return @($snips | ForEach-Object {
-        [PSCustomObject]@{
-            Id         = $_.id
-            Title      = $_.title
-            Scm        = if ($_.scm) { $_.scm } else { 'git' }
-            IsPrivate  = $_.is_private
-            CreatedOn  = $_.created_on
-            UpdatedOn  = $_.updated_on
-            Links      = $_.links
-        }
-    })
+    return $snips
 }
 
 function Import-BitbucketSnip {
@@ -123,17 +139,15 @@ function Import-BitbucketSnip {
         [switch]$Force
     )
     script:InitEnv
-    $cred      = script:GetBitbucketCreds
+    $p    = script:Get-RemoteProvider -Name 'Bitbucket'
+    if (-not $p.IsConfigured()) { script:Out-Warn 'Bitbucket credentials not set. Run: Set-SnipConfig -BitbucketUsername <user> -BitbucketAppPassword <app-pwd>  (or set $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD)'; return }
+    $cred = script:GetBitbucketCreds
     if (-not $cred) { return }
 
-    $base      = 'https://api.bitbucket.org/2.0'
-    $workspace = if ($Workspace) { $Workspace } else { $cred.UserName }
-    $encoded   = [uri]::EscapeDataString($Id)
+    $bbProvider = if ($Workspace) { [BitbucketProvider]::new($cred, $Workspace) } else { $p }
 
     try {
-        $meta = Invoke-RestMethod -Uri "$base/snippets/$workspace/$encoded" `
-                    -Method GET -Credential $cred `
-                    -Headers @{ 'User-Agent' = 'PSSnips/1.0' } -ErrorAction Stop
+        $meta = $bbProvider.GetRemoteById($Id)
     } catch {
         script:Out-Err "Bitbucket API error fetching snippet '$Id': $_"
         return
@@ -228,6 +242,8 @@ function Export-BitbucketSnip {
         [switch]$IsPrivate
     )
     script:InitEnv
+    $p = script:Get-RemoteProvider -Name 'Bitbucket'
+    if (-not $p.IsConfigured()) { script:Out-Warn 'Bitbucket credentials not set. Run: Set-SnipConfig -BitbucketUsername <user> -BitbucketAppPassword <app-pwd>  (or set $env:BITBUCKET_USERNAME / $env:BITBUCKET_APP_PASSWORD)'; return }
     $cred = script:GetBitbucketCreds
     if (-not $cred) { return }
 

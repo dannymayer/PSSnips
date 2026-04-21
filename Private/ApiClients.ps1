@@ -38,3 +38,7 @@ function script:CallGitLab {
     return Invoke-RestMethod @p -ErrorAction Stop
 }
 
+# Delegate scriptblocks — allow provider class methods to call the script-scoped
+# API client functions without using the unsupported script:FunctionName syntax.
+$script:_CallGitHubDelegate = { param($e, $m, $b) script:CallGitHub -Endpoint $e -Method $m -Body $b }
+$script:_CallGitLabDelegate = { param($e, $m, $b) script:CallGitLab -Endpoint $e -Method $m -Body $b }

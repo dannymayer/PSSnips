@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.0.0] — 2026-04-21
+
+### Added
+
+- **Provider/Adapter pattern for remote sources (v3.0 Item 4)**
+  - `RemoteProvider` abstract base class (`Private\Providers\RemoteProvider.ps1`) with a
+    standard interface: `IsConfigured`, `ListRemote`, `GetRemoteById`, `CreateRemote`,
+    `UpdateRemote`, `DeleteRemote`, `SyncRemote`.
+  - `GitHubProvider` concrete class — delegates GitHub Gist API calls via
+    `$script:_CallGitHubDelegate` to keep class methods compatible with module scope.
+  - `GitLabProvider` concrete class — delegates GitLab Snippets API calls via
+    `$script:_CallGitLabDelegate`; `GetRemoteById` returns snippet object with
+    `RawContent` property added.
+  - `BitbucketProvider` concrete class — uses `PSCredential` (Basic auth) and calls
+    `Invoke-RestMethod` directly; `CreateRemote`/`UpdateRemote` throw
+    `NotImplementedException` (multipart upload deferred to v3.1).
+  - `script:Get-RemoteProvider` factory (`Private\ProviderFactory.ps1`) constructs
+    the correct provider for 'GitHub', 'GitLab', or 'Bitbucket' from current config.
+  - Delegate scriptblocks `$script:_CallGitHubDelegate` and `$script:_CallGitLabDelegate`
+    added to `Private\ApiClients.ps1`.
+- **`Get-RemoteSnip`** — unified public function to list or retrieve snippets from any
+  supported provider. Supports `-Provider`, `-Id`, and `-Filter` parameters.
+- **`Sync-RemoteSnip`** — unified public function to push/pull/bidirectionally sync a
+  named local snippet with a remote provider. Falls back to provider-specific sync
+  functions until `SyncRemote` is implemented in the provider classes (v3.1 TODO).
+
+### Changed
+
+- **`Get-GistList`** — now creates a `GitHubProvider` to fetch gists; filtering is
+  performed in the provider, `-Count` trims client-side.
+- **`Get-Gist`, `Import-Gist`, `Invoke-Gist`** — now use `script:Get-RemoteProvider`
+  and `GetRemoteById` instead of calling `script:CallGitHub` directly.
+- **`Export-Gist`** — uses provider `CreateRemote`/`UpdateRemote` for the API call;
+  local index update logic remains in the wrapper.
+- **`Get-GitLabSnipList`** — now uses `script:Get-RemoteProvider` and `ListRemote`.
+- **`Get-GitLabSnip`, `Import-GitLabSnip`** — use `GetRemoteById` (which includes
+  `RawContent`) instead of calling both metadata and raw endpoints separately.
+- **`Export-GitLabSnip`** — uses provider `CreateRemote`/`UpdateRemote`.
+- **`Get-BitbucketSnipList`** — now uses `script:Get-RemoteProvider` and `ListRemote`;
+  returned objects use PascalCase property names (`Id`, `Title`, `IsPrivate`, etc.).
+  `-Role` filter still re-queries the API directly.
+- **`Import-BitbucketSnip`** — uses `BitbucketProvider.GetRemoteById` for the metadata
+  fetch; per-file content fetch still done in the wrapper.
+- **`Export-BitbucketSnip`** — adds `IsConfigured()` guard via provider; multipart
+  upload logic is unchanged.
+- Version bumped to **3.0.0**.
+
+### Architecture notes
+
+- v3.0 Items 1–3 (module split, `SnippetMetadata`, `SnipRepositoryBase`/`JsonSnipRepository`)
+  were completed in prior commits. Item 4 (provider/adapter pattern) completes v3.0.
+- `SyncRemote` in all three provider classes currently throws `NotImplementedException`.
+  `Sync-RemoteSnip` catches this and delegates to the provider-specific sync functions
+  (`Sync-Gist`, `Export/Import-GitLabSnip`, `Sync-BitbucketSnips`). Full implementation
+  is tracked as v3.1 work.
+
+---
+
 ## [2.2.0] - 2026-04-21
 ### Added
 - `Show-Snip -Highlighted` — ANSI syntax highlighting via PowerShell built-in tokenizer (zero dependencies)

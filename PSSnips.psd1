@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSSnips.psm1'
-    ModuleVersion = '2.2.0'
+    ModuleVersion = '3.0.0'
     GUID              = 'f3a7c2b1-84e9-4d56-a021-6c3e9f182b47'
     Author            = 'MayerMediaCo'
     CompanyName       = 'MayerMediaCo'
@@ -19,6 +19,7 @@
         'Get-GistList', 'Get-Gist', 'Import-Gist', 'Export-Gist', 'Invoke-Gist', 'Sync-Gist',
         'Get-GitLabSnipList', 'Get-GitLabSnip', 'Import-GitLabSnip', 'Export-GitLabSnip',
         'Get-BitbucketSnipList', 'Import-BitbucketSnip', 'Export-BitbucketSnip', 'Sync-BitbucketSnips',
+        'Get-RemoteSnip', 'Sync-RemoteSnip',
         'Publish-Snip', 'Sync-SharedSnips',
         'Install-PSSnips', 'Uninstall-PSSnips',
         'Start-SnipManager',
@@ -57,12 +58,18 @@
         'Private\Helpers.ps1',
         'Private\Highlighting.ps1',
         'Private\Completers.ps1',
+        'Private\Providers\RemoteProvider.ps1',
+        'Private\Providers\GitHubProvider.ps1',
+        'Private\Providers\GitLabProvider.ps1',
+        'Private\Providers\BitbucketProvider.ps1',
+        'Private\ProviderFactory.ps1',
         'Public\Config.ps1',
         'Public\Core.ps1',
         'Public\Backup.ps1',
         'Public\GitHub.ps1',
         'Public\GitLab.ps1',
         'Public\Bitbucket.ps1',
+        'Public\Remote.ps1',
         'Public\Sharing.ps1',
         'Public\Profile.ps1',
         'Public\TUI.ps1',

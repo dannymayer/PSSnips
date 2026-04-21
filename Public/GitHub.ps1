@@ -60,19 +60,15 @@ function Get-GistList {
         [uint32]$Count    = 30,
         [string]$Username = ''
     )
+    script:InitEnv
     $cfg  = script:LoadCfg
     $user = if ($Username) { $Username } elseif ($cfg.GitHubUsername) { $cfg.GitHubUsername } else { '' }
-    $ep   = if ($user) { "users/$user/gists?per_page=$Count" } else { "gists?per_page=$Count" }
+    $p    = [GitHubProvider]::new((script:GetGitHubToken), $user)
     try {
-        $gists = @(script:CallGitHub -Endpoint $ep)
+        $gists = @($p.ListRemote($Filter))
     } catch { Write-Error "GitHub API error: $_" -ErrorAction Continue; return }
+    if ([int]$Count -lt $gists.Count) { $gists = $gists[0..([int]$Count - 1)] }
 
-    if ($Filter) {
-        $gists = $gists | Where-Object {
-            $_.description -like "*$Filter*" -or
-            ($_.files.PSObject.Properties.Name | Where-Object { $_ -like "*$Filter*" })
-        }
-    }
     if (-not $gists) { script:Out-Info "No gists found."; return }
 
     Write-Host ""
@@ -134,7 +130,8 @@ function Get-Gist {
         [Parameter(Mandatory, Position=0, HelpMessage = 'GitHub Gist ID')]
         [ValidateNotNullOrEmpty()]
         [string]$GistId)
-    try { $gist = script:CallGitHub -Endpoint "gists/$GistId" }
+    $p = script:Get-RemoteProvider -Name 'GitHub'
+    try { $gist = $p.GetRemoteById($GistId) }
     catch { Write-Error "Failed to fetch gist: $_" -ErrorAction Continue; return }
 
     Write-Host ""
@@ -223,7 +220,8 @@ function Import-Gist {
     )
     script:InitEnv
     $cfg = script:LoadCfg
-    try { $gist = script:CallGitHub -Endpoint "gists/$GistId" }
+    $p   = script:Get-RemoteProvider -Name 'GitHub'
+    try { $gist = $p.GetRemoteById($GistId) }
     catch { Write-Error "Failed to fetch gist: $_" -ErrorAction Continue; return }
 
     $fileNames = @($gist.files.PSObject.Properties.Name)
@@ -328,26 +326,25 @@ function Export-Gist {
     $fn      = "$Name.$($meta.Language)"
     $desc    = if ($Description) { $Description } elseif ($meta.Description) { $meta.Description } else { $Name }
 
-    $body = @{
-        description = $desc
-        public      = [bool]$Public
-        files       = @{ $fn = @{ content = $content } }
-    }
+    $p = script:Get-RemoteProvider -Name 'GitHub'
+    if (-not $p.IsConfigured()) { Write-Error "GitHub credentials not configured. Run Set-SnipConfig -GitHubToken <token>." -ErrorAction Continue; return }
     try {
-        $result = if ($meta.GistId) {
-            script:CallGitHub -Endpoint "gists/$($meta.GistId)" -Method 'PATCH' -Body $body
+        if ($meta.GistId) {
+            $p.UpdateRemote($meta.GistId, $fn, $content)
+            $gistUrl = if ($meta.GistUrl) { $meta.GistUrl } else { '' }
         } else {
-            script:CallGitHub -Endpoint 'gists' -Method 'POST' -Body $body
+            $result  = $p.CreateRemote($desc, $content, $meta.Language, -not $Public)
+            $idx.snippets[$Name].GistId  = $result.Id
+            $idx.snippets[$Name].GistUrl = $result.Url
+            script:SaveIdx -Idx $idx
+            $gistUrl = $result.Url
         }
-        $idx.snippets[$Name].GistId  = $result.id
-        $idx.snippets[$Name].GistUrl = $result.html_url
-        script:SaveIdx -Idx $idx
-        script:Out-OK "Gist $(if ($meta.GistId) {'updated'} else {'created'}): $($result.html_url)"
+        script:Out-OK "Gist $(if ($meta.GistId) {'updated'} else {'created'}): $gistUrl"
         script:Write-AuditLog -Operation 'Export' -SnippetName $Name
         script:Invoke-SnipEvent -EventName 'SnipPublished' -Data @{
             Name     = $Name
             Provider = 'github'
-            Url      = $result.html_url
+            Url      = $gistUrl
         }
     } catch { Write-Error "Failed to export gist: $_" -ErrorAction Continue }
 }
@@ -410,7 +407,8 @@ function Invoke-Gist {
         [string]  $FileName    = '',
         [string[]]$ArgumentList = @()
     )
-    try { $gist = script:CallGitHub -Endpoint "gists/$GistId" }
+    $p = script:Get-RemoteProvider -Name 'GitHub'
+    try { $gist = $p.GetRemoteById($GistId) }
     catch { Write-Error "Failed to fetch gist: $_" -ErrorAction Continue; return }
 
     $fileNames = @($gist.files.PSObject.Properties.Name)

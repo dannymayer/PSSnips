@@ -28,13 +28,13 @@ function Get-GitLabSnipList {
         [string]$Filter = '',
         [uint32]$Count  = 30
     )
+    script:InitEnv
+    $p = script:Get-RemoteProvider -Name 'GitLab'
+    if (-not $p.IsConfigured()) { script:Out-Err 'GitLab credentials not configured. Run Set-SnipConfig -GitLabToken <token>.'; return }
     try {
-        $snips = @(script:CallGitLab -Endpoint "snippets?per_page=$Count")
+        $snips = @($p.ListRemote($Filter))
     } catch { Write-Error "GitLab API error: $_" -ErrorAction Continue; return }
-
-    if ($Filter) {
-        $snips = @($snips | Where-Object { $_.title -like "*$Filter*" -or $_.file_name -like "*$Filter*" })
-    }
+    if ([int]$Count -lt $snips.Count) { $snips = $snips[0..([int]$Count - 1)] }
     if (-not $snips -or $snips.Count -eq 0) { script:Out-Info "No GitLab snippets found."; return }
 
     Write-Host ""
@@ -73,10 +73,12 @@ function Get-GitLabSnip {
         [ValidateNotNullOrEmpty()]
         [string]$SnipId
     )
+    script:InitEnv
+    $p = script:Get-RemoteProvider -Name 'GitLab'
     try {
-        $snip = script:CallGitLab -Endpoint "snippets/$SnipId"
-        $raw  = script:CallGitLab -Endpoint "snippets/$SnipId/raw"
+        $snip = $p.GetRemoteById($SnipId)
     } catch { Write-Error "GitLab API error: $_" -ErrorAction Continue; return }
+    $raw = $snip.RawContent
 
     $snip | Add-Member -NotePropertyName RawContent -NotePropertyValue $raw -Force
     Write-Host ""
@@ -125,9 +127,10 @@ function Import-GitLabSnip {
     )
     script:InitEnv
     $cfg = script:LoadCfg
+    $p   = script:Get-RemoteProvider -Name 'GitLab'
     try {
-        $meta = script:CallGitLab -Endpoint "snippets/$SnipId"
-        $raw  = script:CallGitLab -Endpoint "snippets/$SnipId/raw"
+        $meta = $p.GetRemoteById($SnipId)
+        $raw  = $meta.RawContent
     } catch { Write-Error "GitLab API error: $_" -ErrorAction Continue; return }
 
     $fn       = if ($meta.file_name) { $meta.file_name } else { 'snippet.txt' }
@@ -201,28 +204,26 @@ function Export-GitLabSnip {
     $fn      = "$Name.$($meta.Language)"
     $desc    = if ($Description) { $Description } elseif ($meta.Description) { $meta.Description } else { $Name }
 
-    $body = @{
-        title       = $Name
-        description = $desc
-        visibility  = $Visibility
-        files       = @(@{ file_path = $fn; content = $content })
-    }
+    $p    = script:Get-RemoteProvider -Name 'GitLab'
+    if (-not $p.IsConfigured()) { Write-Error "GitLab credentials not configured. Run Set-SnipConfig -GitLabToken <token>." -ErrorAction Continue; return }
+    $glId = if ($null -ne $meta.PSObject.Properties['GitLabId'] -and $meta.GitLabId) { $meta.GitLabId } else { $null }
     try {
-        $glId = if ($null -ne $meta.PSObject.Properties['GitLabId'] -and $meta.GitLabId) { $meta.GitLabId } else { $null }
-        $result = if ($glId) {
-            script:CallGitLab -Endpoint "snippets/$glId" -Method 'PUT' -Body $body
+        if ($glId) {
+            $p.UpdateRemote($glId, $fn, $content)
+            $glUrl = if ($null -ne $meta.PSObject.Properties['GitLabUrl']) { $meta.GitLabUrl } else { '' }
         } else {
-            script:CallGitLab -Endpoint 'snippets' -Method 'POST' -Body $body
+            $result = $p.CreateRemote($desc, $content, $meta.Language, ($Visibility -eq 'private'))
+            $idx.snippets[$Name].GitLabId  = $result.Id
+            $idx.snippets[$Name].GitLabUrl = $result.Url
+            script:SaveIdx -Idx $idx
+            $glUrl = $result.Url
         }
-        $idx.snippets[$Name].GitLabId  = $result.id
-        $idx.snippets[$Name].GitLabUrl = if ($result.web_url) { $result.web_url } else { '' }
-        script:SaveIdx -Idx $idx
-        script:Out-OK "GitLab snippet $(if ($glId) {'updated'} else {'created'}): $($result.web_url)"
+        script:Out-OK "GitLab snippet $(if ($glId) {'updated'} else {'created'}): $glUrl"
         script:Write-AuditLog -Operation 'Export' -SnippetName $Name
         script:Invoke-SnipEvent -EventName 'SnipPublished' -Data @{
             Name     = $Name
             Provider = 'gitlab'
-            Url      = if ($result.web_url) { $result.web_url } else { '' }
+            Url      = $glUrl
         }
     } catch { Write-Error "Failed to export to GitLab: $_" -ErrorAction Continue }
 }
