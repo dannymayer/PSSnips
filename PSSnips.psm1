@@ -620,6 +620,117 @@ function script:GetContentHash {
 
 #endregion
 
+function script:ConvertTo-HighlightedPS {
+    <#
+    .SYNOPSIS
+        Applies ANSI syntax highlighting to a PowerShell code string using the built-in tokenizer.
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Code
+    )
+    if ([string]::IsNullOrEmpty($Code)) { return $Code }
+
+    $tokens = $null
+    $errors = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseInput($Code, [ref]$tokens, [ref]$errors)
+
+    $esc   = [char]27
+    $reset = "${esc}[0m"
+
+    $hasPSStyle = $null -ne (Get-Variable -Name PSStyle -ErrorAction SilentlyContinue)
+
+    $colorComment  = if ($hasPSStyle) { $PSStyle.Foreground.Green } else { "${esc}[32m" }
+    $colorString   = "${esc}[33m"
+    $colorVariable = "${esc}[35m"
+    $colorKeyword  = "${esc}[94m"
+    $colorNumber   = "${esc}[36m"
+    $colorOperator = "${esc}[37m"
+    $colorType     = "${esc}[33m"
+
+    $result = [System.Text.StringBuilder]::new($Code.Length * 2)
+    $pos    = 0
+
+    foreach ($token in ($tokens | Sort-Object { $_.Extent.StartOffset })) {
+        $start = $token.Extent.StartOffset
+        $end   = $token.Extent.EndOffset
+
+        if ($start -gt $pos) {
+            $null = $result.Append($Code.Substring($pos, $start - $pos))
+        }
+
+        $tkKind  = $token.Kind
+        $tkFlags = $token.TokenFlags
+
+        $color = if ($tkKind -eq [System.Management.Automation.Language.TokenKind]::Comment) {
+            $colorComment
+        } elseif ($tkKind -eq [System.Management.Automation.Language.TokenKind]::StringLiteral -or
+                  $tkKind -eq [System.Management.Automation.Language.TokenKind]::StringExpandable -or
+                  $tkKind -eq [System.Management.Automation.Language.TokenKind]::HereStringLiteral -or
+                  $tkKind -eq [System.Management.Automation.Language.TokenKind]::HereStringExpandable) {
+            $colorString
+        } elseif ($tkKind -eq [System.Management.Automation.Language.TokenKind]::Variable) {
+            $colorVariable
+        } elseif ($tkKind -eq [System.Management.Automation.Language.TokenKind]::Number) {
+            $colorNumber
+        } elseif ($tkFlags -band [System.Management.Automation.Language.TokenFlags]::Keyword) {
+            $colorKeyword
+        } elseif ($tkFlags -band [System.Management.Automation.Language.TokenFlags]::TypeName) {
+            $colorType
+        } elseif ($tkFlags -band ([System.Management.Automation.Language.TokenFlags]::BinaryOperator -bor
+                                   [System.Management.Automation.Language.TokenFlags]::UnaryOperator)) {
+            $colorOperator
+        } else {
+            $null
+        }
+
+        if ($color) {
+            $null = $result.Append($color)
+            $null = $result.Append($token.Extent.Text)
+            $null = $result.Append($reset)
+        } else {
+            $null = $result.Append($token.Extent.Text)
+        }
+
+        $pos = $end
+    }
+
+    if ($pos -lt $Code.Length) {
+        $null = $result.Append($Code.Substring($pos))
+    }
+
+    return $result.ToString()
+}
+
+function script:Invoke-BatHighlight {
+    <#
+    .SYNOPSIS
+        Pipes source code through bat for syntax highlighting.
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Code,
+        [Parameter(Mandatory)]
+        [string]$Extension
+    )
+    if ([string]::IsNullOrEmpty($Code)) { return $Code }
+    if (-not (Get-Command bat -ErrorAction SilentlyContinue)) {
+        script:Out-Warn 'bat is not installed or not on PATH. Falling back to plain output.'
+        return $Code
+    }
+    try {
+        $lines = $Code | bat --language $Extension --color always --paging never --plain 2>$null
+        return ($lines -join "`n")
+    } catch {
+        Write-Verbose "Invoke-BatHighlight: bat failed — $($_.Exception.Message)"
+        return $Code
+    }
+}
+
 function script:SaveVersion {
     param([string]$Name, [string]$FilePath)
     if (-not $FilePath -or -not (Test-Path $FilePath)) { return }
@@ -1183,6 +1294,21 @@ function Show-Snip {
         below the content. Comments are read from ~/.pssnips/comments/<name>.json.
         Has no effect when -PassThru is specified. Use Add-SnipComment to add comments.
 
+    .PARAMETER Highlighted
+        Optional switch. When specified, applies ANSI syntax highlighting to PS1/PSM1/PSD1
+        snippet content using the built-in PowerShell tokenizer. For non-PS files, falls
+        back to plain output unless bat is also available. Has no effect when -PassThru
+        is specified.
+
+    .PARAMETER Format
+        Optional. Controls the display format. Accepted values:
+          Plain  – (default) raw file content with no syntax highlighting.
+          Auto   – uses bat if available, otherwise falls back to the PS tokenizer for
+                   PS files, or plain for all other file types.
+          Bat    – always uses bat for highlighting; warns and falls back to plain if bat
+                   is not installed.
+        Has no effect when -PassThru is specified.
+
     .EXAMPLE
         Show-Snip my-snippet
 
@@ -1197,6 +1323,16 @@ function Show-Snip {
         Show-Snip my-snippet -Raw
 
         Prints the raw file content without any header decoration.
+
+    .EXAMPLE
+        Show-Snip my-deploy -Highlighted
+
+        Displays a PowerShell snippet with ANSI syntax highlighting via the PS tokenizer.
+
+    .EXAMPLE
+        Show-Snip my-deploy -Format Auto
+
+        Displays with bat if installed, otherwise falls back to PS tokenizer highlighting.
 
     .INPUTS
         None. This function does not accept pipeline input.
@@ -1218,7 +1354,12 @@ function Show-Snip {
         [string]$Name,
         [switch]$Raw,
         [switch]$PassThru,
-        [switch]$Comments
+        [switch]$Comments,
+        [Parameter()]
+        [switch]$Highlighted,
+        [Parameter()]
+        [ValidateSet('Auto', 'Bat', 'Plain')]
+        [string]$Format = 'Plain'
     )
     script:InitEnv
     $path = script:FindFile -Name $Name
@@ -1239,7 +1380,23 @@ function Show-Snip {
             Write-Host ""
         }
     }
-    Write-Host $content
+
+    $displayContent = $content
+    if ($Highlighted -or $Format -eq 'Auto' -or $Format -eq 'Bat') {
+        $ext         = [System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()
+        $isPsFile    = $ext -eq 'ps1' -or $ext -eq 'psm1' -or $ext -eq 'psd1'
+        $batAvail    = $null -ne (Get-Command bat -ErrorAction SilentlyContinue)
+        if ($isPsFile) {
+            if ($Format -eq 'Bat' -or ($Format -eq 'Auto' -and $batAvail)) {
+                $displayContent = script:Invoke-BatHighlight -Code $content -Extension $ext
+            } elseif ($Highlighted -or $Format -eq 'Auto') {
+                $displayContent = script:ConvertTo-HighlightedPS -Code $content
+            }
+        } elseif ($Format -eq 'Bat' -or ($Format -eq 'Auto' -and $batAvail)) {
+            $displayContent = script:Invoke-BatHighlight -Code $content -Extension $ext
+        }
+    }
+    Write-Host $displayContent
 
     if ($Comments -and -not $PassThru) {
         $commentsDir  = Join-Path $script:Home 'comments'
@@ -4738,7 +4895,7 @@ $snipNameCompleter = {
     $script:CompleterCache | Where-Object { $_ -like "$word*" }
 }
 
-Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip','Show-Snip','Edit-Snip','Invoke-Snip','Remove-Snip','Copy-Snip','Export-Gist','Sync-Gist','Set-SnipTag' -ParameterName Name -ScriptBlock $snipNameCompleter
+Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip','Show-Snip','Edit-Snip','Invoke-Snip','Remove-Snip','Copy-Snip','Export-Gist','Sync-Gist','Set-SnipTag','Invoke-SnipLint','Test-SnipLint' -ParameterName Name -ScriptBlock $snipNameCompleter
 Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip' -ParameterName Arg1 -ScriptBlock $snipNameCompleter
 
 #endregion
@@ -6690,6 +6847,162 @@ function Unregister-SnipEvent {
     }
 }
 
+function Invoke-SnipLint {
+    <#
+    .SYNOPSIS
+        Runs PSScriptAnalyzer on a snippet and displays diagnostics.
+
+    .DESCRIPTION
+        Invokes PSScriptAnalyzer against the snippet file identified by Name.
+        Only applicable to PowerShell snippets (.ps1, .psm1, .psd1).
+        Results are displayed as a formatted table showing Line, Column, Severity,
+        RuleName, and Message. Returns the diagnostic objects for pipeline use.
+
+    .PARAMETER Name
+        The snippet name to analyse.
+
+    .PARAMETER Severity
+        Filter diagnostics by severity. Defaults to Error, Warning, Information.
+
+    .PARAMETER IncludeRule
+        Pass-through to Invoke-ScriptAnalyzer. Specifies rules to include.
+
+    .PARAMETER ExcludeRule
+        Pass-through to Invoke-ScriptAnalyzer. Specifies rules to exclude.
+
+    .EXAMPLE
+        Invoke-SnipLint deploy-app
+
+        Runs all default PSScriptAnalyzer rules against the 'deploy-app' snippet.
+
+    .EXAMPLE
+        Invoke-SnipLint deploy-app -Severity Error,Warning
+
+        Reports only Error and Warning findings.
+
+    .INPUTS
+        None.
+
+    .OUTPUTS
+        Microsoft.Windows.PowerShell.ScriptAnalyzer.Generic.DiagnosticRecord
+    #>
+    [CmdletBinding()]
+    [OutputType('Microsoft.Windows.PowerShell.ScriptAnalyzer.Generic.DiagnosticRecord')]
+    param(
+        [Parameter(Mandatory, Position=0)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter()]
+        [ValidateSet('Error','Warning','Information','ParseError')]
+        [string[]]$Severity = @('Error','Warning','Information'),
+
+        [Parameter()]
+        [string[]]$IncludeRule = @(),
+
+        [Parameter()]
+        [string[]]$ExcludeRule = @()
+    )
+    script:InitEnv
+    $path = script:FindFile -Name $Name
+    if (-not $path -or -not (Test-Path $path)) { Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return }
+
+    $ext = [System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()
+    if ($ext -notin @('ps1','psm1','psd1')) {
+        script:Out-Warn "Lint is only available for PowerShell snippets (.ps1, .psm1, .psd1). Got .$ext."
+        return
+    }
+
+    if (-not (Get-Command Invoke-ScriptAnalyzer -ErrorAction SilentlyContinue)) {
+        script:Out-Warn 'PSScriptAnalyzer is not installed. Install it with: Install-Module PSScriptAnalyzer'
+        return
+    }
+
+    $saParams = @{ Path = $path; Severity = $Severity }
+    if ($IncludeRule.Count -gt 0) { $saParams['IncludeRule'] = $IncludeRule }
+    if ($ExcludeRule.Count -gt 0) { $saParams['ExcludeRule'] = $ExcludeRule }
+
+    $results = Invoke-ScriptAnalyzer @saParams
+
+    if (-not $results -or $results.Count -eq 0) {
+        script:Out-OK "No issues found in '$Name'."
+        return
+    }
+
+    script:Out-Warn ("Found {0} issue(s) in '{1}':" -f $results.Count, $Name)
+    $results | Select-Object Line,Column,Severity,RuleName,Message | Format-Table -AutoSize | Out-String | Write-Host
+    return $results
+}
+
+function Test-SnipLint {
+    <#
+    .SYNOPSIS
+        Tests a snippet with PSScriptAnalyzer and returns pass/fail.
+
+    .DESCRIPTION
+        Runs PSScriptAnalyzer on the named snippet. Returns $true if no issues at
+        or above the specified severity are found, $false otherwise.
+        Only applicable to PowerShell snippets (.ps1, .psm1, .psd1).
+
+    .PARAMETER Name
+        The snippet name to test.
+
+    .PARAMETER Severity
+        Severity levels to treat as failures. Defaults to Error, Warning.
+
+    .EXAMPLE
+        if (-not (Test-SnipLint deploy-app)) { throw 'Snippet has PSSA violations' }
+
+    .EXAMPLE
+        Test-SnipLint deploy-app -Severity Error
+
+        Returns $true only if no Error-severity findings exist.
+
+    .INPUTS
+        None.
+
+    .OUTPUTS
+        System.Boolean
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position=0)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter()]
+        [ValidateSet('Error','Warning','Information','ParseError')]
+        [string[]]$Severity = @('Error','Warning')
+    )
+    script:InitEnv
+    $path = script:FindFile -Name $Name
+    if (-not $path -or -not (Test-Path $path)) { Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return $false }
+
+    $ext = [System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()
+    if ($ext -notin @('ps1','psm1','psd1')) {
+        script:Out-Warn "Lint is only available for PowerShell snippets (.ps1, .psm1, .psd1). Got .$ext."
+        return $false
+    }
+
+    if (-not (Get-Command Invoke-ScriptAnalyzer -ErrorAction SilentlyContinue)) {
+        script:Out-Warn 'PSScriptAnalyzer is not installed. Install it with: Install-Module PSScriptAnalyzer'
+        return $false
+    }
+
+    $saParams = @{ Path = $path; Severity = $Severity }
+
+    $results = Invoke-ScriptAnalyzer @saParams
+    $passed = (-not $results -or $results.Count -eq 0)
+
+    if ($passed) {
+        script:Out-OK "Test-SnipLint '$Name': PASSED"
+    } else {
+        script:Out-Warn ("Test-SnipLint '$Name': {0} issue(s) found (Severity: {1})" -f $results.Count, ($Severity -join ','))
+    }
+    return $passed
+}
+
 #endregion
 
 Export-ModuleMember -Function @(
@@ -6713,5 +7026,6 @@ Export-ModuleMember -Function @(
     'New-SnipSchedule', 'Get-SnipSchedule', 'Remove-SnipSchedule',
     'Initialize-SnipPreCommitHook',
     'Sync-SnipMetadata',
-    'Register-SnipEvent', 'Unregister-SnipEvent'
+    'Register-SnipEvent', 'Unregister-SnipEvent',
+    'Invoke-SnipLint', 'Test-SnipLint'
 ) -Alias 'snip'

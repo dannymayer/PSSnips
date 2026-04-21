@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.0] - 2026-04-21
+### Added
+- `Show-Snip -Highlighted` — ANSI syntax highlighting via PowerShell built-in tokenizer (zero dependencies)
+- `Show-Snip -Format Auto|Bat|Plain` — `bat` integration with automatic fallback to tokenizer
+- `Invoke-SnipLint` — runs PSScriptAnalyzer on a snippet and displays a diagnostic table
+- `Test-SnipLint` — returns pass/fail boolean for CI pipeline use; PS1/PSM1/PSD1 only
 ## [2.1.0] - 2026-04-20
 ### Added
 - `{{VAR:default}}` inline template defaults — placeholders now support `:default` fallback syntax
