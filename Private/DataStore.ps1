@@ -93,6 +93,12 @@ function script:LoadIdx {
             if ($raw) {
                 $idx = $raw | ConvertFrom-Json -AsHashtable  # -AsHashtable preserves nested hashtables for index key access
                 if (-not $idx.ContainsKey('snippets')) { $idx['snippets'] = @{} }
+                # Convert raw hashtable entries to SnippetMetadata objects
+                $converted = @{}
+                foreach ($key in $idx['snippets'].Keys) {
+                    $converted[$key] = [SnippetMetadata]::FromHashtable($idx['snippets'][$key])
+                }
+                $idx['snippets'] = $converted
                 $script:IdxCache = $idx
                 $script:IdxDirty = $false
                 return $idx
@@ -123,7 +129,12 @@ function script:SaveIdx {
     $lock = script:AcquireLock -LockFile $lockFile
     try {
         $tmp = "$script:IdxFile.tmp"
-        $Idx | ConvertTo-Json -Depth 10 | Set-Content -Path $tmp -Encoding UTF8
+        $serializable = @{ snippets = @{} }
+        foreach ($key in $Idx.snippets.Keys) {
+            $entry = $Idx.snippets[$key]
+            $serializable.snippets[$key] = if ($entry -is [SnippetMetadata]) { $entry.ToHashtable() } else { $entry }
+        }
+        $serializable | ConvertTo-Json -Depth 10 | Set-Content -Path $tmp -Encoding UTF8
         Move-Item -Path $tmp -Destination $script:IdxFile -Force
         $script:IdxCache = $Idx
         $script:IdxDirty = $false

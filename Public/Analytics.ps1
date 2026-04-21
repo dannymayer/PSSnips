@@ -67,11 +67,11 @@ function Get-StaleSnip {
 
     foreach ($name in $idx.snippets.Keys) {
         $entry    = $idx.snippets[$name]
-        $hasRun   = $entry.ContainsKey('lastRun') -and $entry['lastRun']
-        $runCount = if ($entry.ContainsKey('runCount')) { [int]$entry['runCount'] } else { 0 }
+        $hasRun   = $null -ne $entry.LastRun
+        $runCount = $entry.RunCount
 
         if ($hasRun) {
-            $daysIdle = ([datetime]::Now - [datetime]$entry['lastRun']).Days
+            $daysIdle = ([datetime]::Now - [datetime]$entry.LastRun).Days
         } elseif ($IncludeNeverRun) {
             $daysIdle = [int]::MaxValue
         } else {
@@ -81,9 +81,9 @@ function Get-StaleSnip {
         if ($daysIdle -ge $DaysUnused) {
             $results.Add([pscustomobject]@{
                 Name     = $name
-                Language = $entry['language']
-                Tags     = @($entry['tags']) -join ', '
-                LastRun  = if ($hasRun) { [datetime]$entry['lastRun'] | Get-Date -Format 'yyyy-MM-dd' } else { 'Never' }
+                Language = $entry.Language
+                Tags     = @($entry.Tags) -join ', '
+                LastRun  = if ($hasRun) { ([datetime]$entry.LastRun) | Get-Date -Format 'yyyy-MM-dd' } else { 'Never' }
                 DaysIdle = if ($daysIdle -eq [int]::MaxValue) { '∞' } else { $daysIdle }
                 RunCount = $runCount
             })
@@ -186,17 +186,17 @@ function Get-SnipStats {
     $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
     foreach ($name in $idx.snippets.Keys) {
         $entry    = $idx.snippets[$name]
-        $runCount = if ($entry.ContainsKey('runCount')) { [int]$entry['runCount'] } else { 0 }
-        $lastRun  = if ($entry.ContainsKey('lastRun') -and $entry['lastRun']) {
-            [datetime]$entry['lastRun'] | Get-Date -Format 'yyyy-MM-dd HH:mm'
+        $runCount = $entry.RunCount
+        $lastRun  = if ($null -ne $entry.LastRun) {
+            ([datetime]$entry.LastRun) | Get-Date -Format 'yyyy-MM-dd HH:mm'
         } else { 'Never' }
         $rows.Add([pscustomobject]@{
             Rank     = 0   # assigned after sort
             Name     = $name
-            Language = $entry['language']
+            Language = $entry.Language
             RunCount = $runCount
             LastRun  = $lastRun
-            Tags     = @($entry['tags']) -join ', '
+            Tags     = @($entry.Tags) -join ', '
         })
     }
 
@@ -356,7 +356,7 @@ function Export-VSCodeSnips {
     $byFile = @{}   # outPath → hashtable of VS Code snippet entries
     foreach ($name in $idx.snippets.Keys) {
         $entry = $idx.snippets[$name]
-        $lang  = $entry['language']
+        $lang  = $entry.Language
         if ($Language -and $lang -ne $Language) { continue }
 
         $vsFile = if ($langMap.ContainsKey($lang)) { $langMap[$lang] } else { 'plaintext.json' }
@@ -366,7 +366,7 @@ function Export-VSCodeSnips {
         if (-not $snipPath -or -not (Test-Path $snipPath)) { continue }
 
         $bodyLines = @(Get-Content $snipPath -Encoding UTF8)
-        $desc = if ($entry.ContainsKey('description') -and $entry['description']) { $entry['description'] } else { $name }
+        $desc = if ($entry.Description) { $entry.Description } else { $name }
 
         if (-not $byFile.ContainsKey($outPath)) { $byFile[$outPath] = @{} }
         $byFile[$outPath][$name] = @{
@@ -879,8 +879,8 @@ function Set-SnipRating {
     }
     if (-not $PSCmdlet.ShouldProcess($Name, "Set rating to $Stars star$(if ($Stars -ne 1) {'s'})")) { return }
     try {
-        $idx.snippets[$Name]['rating']  = $Stars
-        $idx.snippets[$Name]['ratedAt'] = Get-Date -Format 'o'
+        $idx.snippets[$Name].Rating  = $Stars
+        Add-Member -InputObject $idx.snippets[$Name] -NotePropertyName 'RatedAt' -NotePropertyValue (Get-Date -Format 'o') -Force
         script:SaveIdx -Idx $idx
         script:Out-OK "Snippet '$Name' rated $Stars star$(if ($Stars -ne 1) {'s'})."
     } catch {
@@ -1414,7 +1414,7 @@ function Sync-SnipMetadata {
         @($Name)
     } else {
         @($idx.snippets.Keys | Where-Object {
-            $idx.snippets[$_]['language'] -in 'ps1','psm1'
+            $idx.snippets[$_].Language -in 'ps1','psm1'
         })
     }
 
@@ -1436,20 +1436,20 @@ function Sync-SnipMetadata {
         $tagsChanged  = $false
 
         if ($cbh.Synopsis) {
-            $emptyDesc = -not $entry['description']
+            $emptyDesc = -not $entry.Description
             if ($emptyDesc -or $Overwrite) {
                 if ($PSCmdlet.ShouldProcess($n, "Set description to '$($cbh.Synopsis)'")) {
-                    $entry['description'] = $cbh.Synopsis
+                    $entry.Description = $cbh.Synopsis
                     $descChanged = $true
                 }
             }
         }
 
         if ($cbh.Tags.Count -gt 0) {
-            $emptyTags = @($entry['tags']).Count -eq 0
+            $emptyTags = @($entry.Tags).Count -eq 0
             if ($emptyTags -or $Overwrite) {
                 if ($PSCmdlet.ShouldProcess($n, "Set tags to [$($cbh.Tags -join ', ')]")) {
-                    $entry['tags'] = $cbh.Tags
+                    $entry.Tags = $cbh.Tags
                     $tagsChanged = $true
                 }
             }

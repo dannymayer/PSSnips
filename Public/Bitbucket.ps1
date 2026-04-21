@@ -181,8 +181,8 @@ function Import-BitbucketSnip {
         # Stamp the bitbucketId into the index entry
         $idx = script:LoadIdx
         if ($idx.snippets.ContainsKey($snipName)) {
-            $idx.snippets[$snipName]['bitbucketId']  = $Id
-            $idx.snippets[$snipName]['bitbucketUrl'] = if ($meta.links.html.href) { $meta.links.html.href } else { '' }
+            Add-Member -InputObject $idx.snippets[$snipName] -NotePropertyName 'BitbucketId'  -NotePropertyValue $Id -Force
+            Add-Member -InputObject $idx.snippets[$snipName] -NotePropertyName 'BitbucketUrl' -NotePropertyValue (if ($meta.links.html.href) { $meta.links.html.href } else { '' }) -Force
             script:SaveIdx -Idx $idx
         }
         script:Out-OK "Imported Bitbucket snippet '$snipName' ($ext)."
@@ -245,7 +245,7 @@ function Export-BitbucketSnip {
     }
 
     $content      = Get-Content $path -Raw -Encoding UTF8
-    $fn           = "$Name.$($meta.language)"
+    $fn           = "$Name.$($meta.Language)"
     $effectTitle  = if ($Title) { $Title } else { $Name }
     $base         = 'https://api.bitbucket.org/2.0'
     $workspace    = $cred.UserName
@@ -267,8 +267,8 @@ function Export-BitbucketSnip {
                       -Headers @{ 'User-Agent' = 'PSSnips/1.0' } `
                       -Form $form -ErrorAction Stop
 
-        $idx.snippets[$Name]['bitbucketId']  = $result.id
-        $idx.snippets[$Name]['bitbucketUrl'] = if ($result.links.html.href) { $result.links.html.href } else { '' }
+        $idx.snippets[$Name].BitbucketId  = $result.id
+        $idx.snippets[$Name].BitbucketUrl = if ($result.links.html.href) { $result.links.html.href } else { '' }
         script:SaveIdx -Idx $idx
         script:Out-OK "Bitbucket snippet created: $($result.links.html.href)"
         script:Invoke-SnipEvent -EventName 'SnipPublished' -Data @{
@@ -342,7 +342,7 @@ function Sync-BitbucketSnips {
         $idx = script:LoadIdx
         foreach ($snipName in $idx.snippets.Keys) {
             $entry = $idx.snippets[$snipName]
-            $hasBbId = $entry.ContainsKey('bitbucketId') -and $entry.bitbucketId
+            $hasBbId = $null -ne $entry.PSObject.Properties['BitbucketId'] -and $entry.BitbucketId
             if (-not $hasBbId) {
                 Export-BitbucketSnip -Name $snipName
             }

@@ -45,6 +45,49 @@ AfterAll {
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+Describe '[SnippetMetadata] class' {
+    It 'FromHashtable maps all known fields' {
+        $sm = & (Get-Module PSSnips) {
+            [SnippetMetadata]::FromHashtable(@{ name = 'test'; language = 'ps1'; tags = @('a','b'); runCount = 3; pinned = $true })
+        }
+        $sm.Name     | Should -Be 'test'
+        $sm.Language | Should -Be 'ps1'
+        $sm.Tags     | Should -Be @('a','b')
+        $sm.RunCount | Should -Be 3
+        $sm.Pinned   | Should -BeTrue
+    }
+    It 'FromHashtable handles missing fields with defaults' {
+        $sm = & (Get-Module PSSnips) {
+            [SnippetMetadata]::FromHashtable(@{ name = 'x' })
+        }
+        $sm.Language | Should -Be ''
+        $sm.RunCount | Should -Be 0
+        $sm.Pinned   | Should -BeFalse
+        $sm.Tags     | Should -BeNullOrEmpty
+    }
+    It 'ToHashtable round-trips through JSON' {
+        $sm2 = & (Get-Module PSSnips) {
+            $sm = [SnippetMetadata]::new()
+            $sm.Name = 'roundtrip'; $sm.Language = 'ps1'; $sm.Tags = @('x')
+            $json   = $sm.ToHashtable() | ConvertTo-Json -Depth 5
+            $back   = $json | ConvertFrom-Json -AsHashtable
+            [SnippetMetadata]::FromHashtable($back)
+        }
+        $sm2.Name     | Should -Be 'roundtrip'
+        $sm2.Language | Should -Be 'ps1'
+        $sm2.Tags     | Should -Be @('x')
+    }
+    It 'LastRun omitted from ToHashtable when null' {
+        $ht = & (Get-Module PSSnips) {
+            $sm = [SnippetMetadata]::new(); $sm.Name = 'nolastrun'
+            $sm.ToHashtable()
+        }
+        $ht.ContainsKey('lastRun') | Should -BeFalse
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 Describe 'Module: Load and manifest' {
 
     It "Module imports without error" {
@@ -96,16 +139,12 @@ Describe 'Safety: Single-item array handling' {
         It "Corrupt tags (bare string in JSON): Get-Snip no error" {
             & (Get-Module PSSnips) {
                 $idx = script:LoadIdx
-                $idx['snippets']['corrupt-tags'] = @{
-                    name        = 'corrupt-tags'
-                    description = 'corrupt entry'
-                    language    = 'ps1'
-                    tags        = 'bare-string-not-array'
-                    created     = (Get-Date -Format 'o')
-                    modified    = (Get-Date -Format 'o')
-                    gistId      = $null
-                    gistUrl     = $null
-                }
+                $sm = [SnippetMetadata]::new()
+                $sm.Name        = 'corrupt-tags'
+                $sm.Description = 'corrupt entry'
+                $sm.Language    = 'ps1'
+                $sm.Tags        = @('bare-string-not-array')
+                $idx.snippets['corrupt-tags'] = $sm
                 Set-Content (Join-Path $script:SnipDir 'corrupt-tags.ps1') -Value '# corrupt' -Encoding UTF8
                 script:SaveIdx -Idx $idx
             }
@@ -201,7 +240,7 @@ Describe 'Snippets: Tag management' {
 
     It "Set-SnipTag -Tags replaces all existing tags" {
         Set-SnipTag -Name 'tag-subject' -Tags @('newA', 'newB') *>&1 | Out-Null
-        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject']['tags'])
+        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject'].Tags)
         $tags | Should -Contain 'newA'
         $tags | Should -Contain 'newB'
         $tags | Should -Not -Contain 'alpha'
@@ -210,20 +249,20 @@ Describe 'Snippets: Tag management' {
     It "Set-SnipTag -Add appends without creating duplicates" {
         Set-SnipTag -Name 'tag-subject' -Add @('extra') *>&1 | Out-Null
         Set-SnipTag -Name 'tag-subject' -Add @('extra') *>&1 | Out-Null
-        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject']['tags'])
+        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject'].Tags)
         $tags | Should -Contain 'extra'
         ($tags | Where-Object { $_ -eq 'extra' }).Count | Should -Be 1
     }
 
     It "Set-SnipTag -Remove removes the specified tag" {
         Set-SnipTag -Name 'tag-subject' -Remove @('extra') *>&1 | Out-Null
-        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject']['tags'])
+        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject'].Tags)
         $tags | Should -Not -Contain 'extra'
     }
 
     It "Tags survive round-trip through JSON (save and reload)" {
         Set-SnipTag -Name 'tag-subject' -Tags @('rt1', 'rt2') *>&1 | Out-Null
-        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject']['tags'])
+        $tags = @((& (Get-Module PSSnips) { script:LoadIdx }).snippets['tag-subject'].Tags)
         $tags | Should -Contain 'rt1'
         $tags | Should -Contain 'rt2'
     }
@@ -399,16 +438,13 @@ Describe 'History: Run tracking' {
 
     It "After Invoke-Snip, runCount is incremented in the index" {
         $idx = & (Get-Module PSSnips) { script:LoadIdx }
-        $count = if ($idx.snippets['history-snip'].ContainsKey('runCount')) {
-            [int]$idx.snippets['history-snip']['runCount']
-        } else { 0 }
+        $count = $idx.snippets['history-snip'].RunCount
         $count | Should -BeGreaterOrEqual 1
     }
 
     It "After Invoke-Snip, lastRun timestamp is set in the index" {
         $idx = & (Get-Module PSSnips) { script:LoadIdx }
-        $idx.snippets['history-snip'].ContainsKey('lastRun') | Should -BeTrue
-        $idx.snippets['history-snip']['lastRun'] | Should -Not -BeNullOrEmpty
+        $null -ne $idx.snippets['history-snip'].LastRun | Should -BeTrue
     }
 
     It "Get-Snip returns Runs property reflecting runCount" {
@@ -430,8 +466,7 @@ Describe 'Favorites: Pin and unpin' {
     It "Set-SnipTag -Pin sets pinned=true in index" {
         Set-SnipTag -Name 'pin-me' -Pin *>&1 | Out-Null
         $idx = & (Get-Module PSSnips) { script:LoadIdx }
-        $idx.snippets['pin-me'].ContainsKey('pinned') | Should -BeTrue
-        $idx.snippets['pin-me']['pinned'] | Should -BeTrue
+        $idx.snippets['pin-me'].Pinned | Should -BeTrue
     }
 
     It "Get-Snip returns Pinned=true for pinned snippet" {
@@ -450,7 +485,7 @@ Describe 'Favorites: Pin and unpin' {
     It "Set-SnipTag -Unpin sets pinned=false in index" {
         Set-SnipTag -Name 'pin-me' -Unpin *>&1 | Out-Null
         $idx = & (Get-Module PSSnips) { script:LoadIdx }
-        $idx.snippets['pin-me']['pinned'] | Should -BeFalse
+        $idx.snippets['pin-me'].Pinned | Should -BeFalse
     }
 }
 
@@ -651,8 +686,8 @@ Describe 'Dedup: Duplicate detection' {
 
     It "New-Snip stores contentHash in index entry" {
         $idx = & (Get-Module PSSnips) { script:LoadIdx }
-        $idx.snippets['orig-dup'].ContainsKey('contentHash') | Should -BeTrue
-        $idx.snippets['orig-dup']['contentHash'].Length       | Should -Be 64
+        $idx.snippets['orig-dup'].ContentHash | Should -Not -BeNullOrEmpty
+        $idx.snippets['orig-dup'].ContentHash.Length | Should -Be 64
     }
 }
 

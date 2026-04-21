@@ -6,6 +6,7 @@ Set-StrictMode -Version Latest
 
 # Load private files in dependency order
 foreach ($file in @(
+    'Private\Models.ps1',    # class definitions — must be first
     'Private\Data.ps1',
     'Private\Logging.ps1',
     'Private\Parsing.ps1',

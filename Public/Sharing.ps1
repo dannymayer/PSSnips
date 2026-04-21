@@ -61,7 +61,7 @@ function Publish-Snip {
             } catch { @{ snippets = @{} } }
         } else { @{ snippets = @{} } }
 
-        $sharedIdx['snippets'][$Name] = $idx.snippets[$Name]
+        $sharedIdx['snippets'][$Name] = if ($idx.snippets[$Name] -is [SnippetMetadata]) { $idx.snippets[$Name].ToHashtable() } else { $idx.snippets[$Name] }
 
         $sharedLockFile = "$sharedIdxFile.lock"
         $sharedLock = script:AcquireLock -LockFile $sharedLockFile
@@ -127,7 +127,8 @@ function Sync-SharedSnips {
     foreach ($snipName in @($sharedIdx['snippets'].Keys)) {
         if ($localIdx.snippets.ContainsKey($snipName) -and -not $Force) { continue }
         $meta    = $sharedIdx['snippets'][$snipName]
-        $lang    = $meta['language']
+        if ($meta -is [hashtable]) { $meta = [SnippetMetadata]::FromHashtable($meta) }
+        $lang    = $meta.Language
         $srcFile = Join-Path $sharedDir "$snipName.$lang"
         if (-not (Test-Path $srcFile)) {
             $found = @(Get-ChildItem $sharedDir -Filter "$snipName.*" -ErrorAction SilentlyContinue)

@@ -253,11 +253,13 @@ function Import-Gist {
         $body = if ($f.truncated) { (Invoke-RestMethod -Uri $f.raw_url).ToString() } else { $f.content }
         Set-Content (Join-Path $cfg.SnippetsDir "$snipName.$ext") -Value $body -Encoding UTF8
 
-        $idx.snippets[$snipName] = @{
-            name = $snipName; description = $gist.description; language = $ext
-            tags = @(); created = (Get-Date -Format 'o'); modified = (Get-Date -Format 'o')
-            gistId = $GistId; gistUrl = $gist.html_url
-        }
+        $importMeta = [SnippetMetadata]::new()
+        $importMeta.Name        = $snipName
+        $importMeta.Description = if ($gist.description) { $gist.description } else { '' }
+        $importMeta.Language    = $ext
+        $importMeta.GistId      = $GistId
+        $importMeta.GistUrl     = if ($gist.html_url) { $gist.html_url } else { '' }
+        $idx.snippets[$snipName] = $importMeta
         script:Out-OK "Imported '$snipName' ($ext)."
         script:Write-AuditLog -Operation 'Import' -SnippetName $snipName
     }
@@ -323,8 +325,8 @@ function Export-Gist {
     $meta    = $idx.snippets[$Name]
     $path    = script:FindFile -Name $Name
     $content = Get-Content $path -Raw -Encoding UTF8
-    $fn      = "$Name.$($meta.language)"
-    $desc    = if ($Description) { $Description } elseif ($meta.description) { $meta.description } else { $Name }
+    $fn      = "$Name.$($meta.Language)"
+    $desc    = if ($Description) { $Description } elseif ($meta.Description) { $meta.Description } else { $Name }
 
     $body = @{
         description = $desc
@@ -332,15 +334,15 @@ function Export-Gist {
         files       = @{ $fn = @{ content = $content } }
     }
     try {
-        $result = if ($meta.gistId) {
-            script:CallGitHub -Endpoint "gists/$($meta.gistId)" -Method 'PATCH' -Body $body
+        $result = if ($meta.GistId) {
+            script:CallGitHub -Endpoint "gists/$($meta.GistId)" -Method 'PATCH' -Body $body
         } else {
             script:CallGitHub -Endpoint 'gists' -Method 'POST' -Body $body
         }
-        $idx.snippets[$Name]['gistId']  = $result.id
-        $idx.snippets[$Name]['gistUrl'] = $result.html_url
+        $idx.snippets[$Name].GistId  = $result.id
+        $idx.snippets[$Name].GistUrl = $result.html_url
         script:SaveIdx -Idx $idx
-        script:Out-OK "Gist $(if ($meta.gistId) {'updated'} else {'created'}): $($result.html_url)"
+        script:Out-OK "Gist $(if ($meta.GistId) {'updated'} else {'created'}): $($result.html_url)"
         script:Write-AuditLog -Operation 'Export' -SnippetName $Name
         script:Invoke-SnipEvent -EventName 'SnipPublished' -Data @{
             Name     = $Name
@@ -523,8 +525,8 @@ function Sync-Gist {
     script:InitEnv
     $idx = script:LoadIdx
     if (-not $idx.snippets.ContainsKey($Name)) { Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return }
-    if (-not $idx.snippets[$Name].gistId)      { Write-Error "'$Name' has no linked gist. Run Export-Gist first." -ErrorAction Continue; return }
+    if (-not $idx.snippets[$Name].GistId)      { Write-Error "'$Name' has no linked gist. Run Export-Gist first." -ErrorAction Continue; return }
     if ($Push) { Export-Gist -Name $Name }
-    else       { Import-Gist -GistId $idx.snippets[$Name].gistId -Name $Name -Force }
+    else       { Import-Gist -GistId $idx.snippets[$Name].GistId -Name $Name -Force }
 }
 

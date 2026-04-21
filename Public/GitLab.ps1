@@ -143,19 +143,14 @@ function Import-GitLabSnip {
     }
 
     Set-Content (Join-Path $cfg.SnippetsDir "$snipName.$ext") -Value $raw -Encoding UTF8
-    $idx.snippets[$snipName] = @{
-        name        = $snipName
-        description = if ($meta.description) { $meta.description } else { $meta.title }
-        language    = $ext
-        tags        = @()
-        created     = (Get-Date -Format 'o')
-        modified    = (Get-Date -Format 'o')
-        gistId      = $null
-        gistUrl     = $null
-        gitlabId    = $SnipId
-        gitlabUrl   = if ($meta.web_url) { $meta.web_url } else { '' }
-        contentHash = script:GetContentHash -Content $raw
-    }
+    $glMeta = [SnippetMetadata]::new()
+    $glMeta.Name        = $snipName
+    $glMeta.Description = if ($meta.description) { $meta.description } else { if ($meta.title) { $meta.title } else { '' } }
+    $glMeta.Language    = $ext
+    $glMeta.ContentHash = script:GetContentHash -Content $raw
+    Add-Member -InputObject $glMeta -NotePropertyName 'GitLabId'  -NotePropertyValue $SnipId -Force
+    Add-Member -InputObject $glMeta -NotePropertyName 'GitLabUrl' -NotePropertyValue (if ($meta.web_url) { $meta.web_url } else { '' }) -Force
+    $idx.snippets[$snipName] = $glMeta
     script:SaveIdx -Idx $idx
     script:Out-OK "Imported GitLab snippet '$snipName' ($ext)."
     script:Write-AuditLog -Operation 'Import' -SnippetName $snipName
@@ -203,8 +198,8 @@ function Export-GitLabSnip {
     $path    = script:FindFile -Name $Name
     if (-not $path -or -not (Test-Path $path)) { Write-Error "Snippet file for '$Name' not found." -ErrorAction Continue; return }
     $content = Get-Content $path -Raw -Encoding UTF8
-    $fn      = "$Name.$($meta.language)"
-    $desc    = if ($Description) { $Description } elseif ($meta.description) { $meta.description } else { $Name }
+    $fn      = "$Name.$($meta.Language)"
+    $desc    = if ($Description) { $Description } elseif ($meta.Description) { $meta.Description } else { $Name }
 
     $body = @{
         title       = $Name
@@ -213,14 +208,14 @@ function Export-GitLabSnip {
         files       = @(@{ file_path = $fn; content = $content })
     }
     try {
-        $glId = if ($meta.ContainsKey('gitlabId') -and $meta.gitlabId) { $meta.gitlabId } else { $null }
+        $glId = if ($null -ne $meta.PSObject.Properties['GitLabId'] -and $meta.GitLabId) { $meta.GitLabId } else { $null }
         $result = if ($glId) {
             script:CallGitLab -Endpoint "snippets/$glId" -Method 'PUT' -Body $body
         } else {
             script:CallGitLab -Endpoint 'snippets' -Method 'POST' -Body $body
         }
-        $idx.snippets[$Name]['gitlabId']  = $result.id
-        $idx.snippets[$Name]['gitlabUrl'] = if ($result.web_url) { $result.web_url } else { '' }
+        $idx.snippets[$Name].GitLabId  = $result.id
+        $idx.snippets[$Name].GitLabUrl = if ($result.web_url) { $result.web_url } else { '' }
         script:SaveIdx -Idx $idx
         script:Out-OK "GitLab snippet $(if ($glId) {'updated'} else {'created'}): $($result.web_url)"
         script:Write-AuditLog -Operation 'Export' -SnippetName $Name

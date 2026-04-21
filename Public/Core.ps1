@@ -128,6 +128,11 @@ function Get-Snip {
             if ($raw) {
                 $si = $raw | ConvertFrom-Json -AsHashtable
                 if (-not $si.ContainsKey('snippets')) { $si['snippets'] = @{} }
+                foreach ($k in @($si.snippets.Keys)) {
+                    if ($si.snippets[$k] -is [hashtable]) {
+                        $si.snippets[$k] = [SnippetMetadata]::FromHashtable($si.snippets[$k])
+                    }
+                }
                 $si
             } else { @{ snippets = @{} } }
         } catch { @{ snippets = @{} } }
@@ -145,11 +150,11 @@ function Get-Snip {
         $m  = $idx.snippets[$name]
         # @($m.tags) normalises to array: PS 5.1 ConvertFrom-Json may return a bare
         # string for a single-element JSON array; wrapping with @() is defensive.
-        $mf = -not $Filter   -or $name -like "*$Filter*" -or ($m.description -like "*$Filter*") -or
-              ((@($m.tags) -join ',') -like "*$Filter*") -or
+        $mf = -not $Filter   -or $name -like "*$Filter*" -or ($m.Description -like "*$Filter*") -or
+              ((@($m.Tags) -join ',') -like "*$Filter*") -or
               ($Content -and $Filter -and (script:SearchSnipContent -Name $name -SearchString $Filter))
-        $mt = -not $Tag      -or (@($m.tags) -contains $Tag)
-        $ml = -not $Language -or $m.language -eq $Language
+        $mt = -not $Tag      -or (@($m.Tags) -contains $Tag)
+        $ml = -not $Language -or $m.Language -eq $Language
         if ($mf -and $mt -and $ml) { $matchedNames.Add($name) }
     }
 
@@ -157,17 +162,17 @@ function Get-Snip {
     $sortedNames = switch ($SortBy) {
         'Modified' {
             $matchedNames | Sort-Object {
-                if ($idx.snippets[$_].ContainsKey('modified')) { $idx.snippets[$_]['modified'] } else { '' }
+                $idx.snippets[$_].Modified
             }
         }
         'RunCount' {
             $matchedNames | Sort-Object {
-                if ($idx.snippets[$_].ContainsKey('runCount')) { [int]$idx.snippets[$_]['runCount'] } else { 0 }
+                $idx.snippets[$_].RunCount
             } -Descending
         }
         'LastRun'  {
             $matchedNames | Sort-Object {
-                if ($idx.snippets[$_].ContainsKey('lastRun')) { $idx.snippets[$_]['lastRun'] } else { '' }
+                $idx.snippets[$_].LastRun
             } -Descending
         }
         default    { $matchedNames | Sort-Object }   # 'Name' — alphabetical ascending
@@ -175,32 +180,32 @@ function Get-Snip {
 
     # Phase 3: Pinned entries float to the top of the listing
     $pinnedNames    = @($sortedNames | Where-Object {
-        $idx.snippets[$_].ContainsKey('pinned') -and $idx.snippets[$_]['pinned'] -eq $true
+        $idx.snippets[$_].Pinned -eq $true
     })
     $nonPinnedNames = @($sortedNames | Where-Object {
-        -not ($idx.snippets[$_].ContainsKey('pinned') -and $idx.snippets[$_]['pinned'] -eq $true)
+        $idx.snippets[$_].Pinned -ne $true
     })
     $finalNames = @($pinnedNames) + @($nonPinnedNames)
 
     # Phase 4: Build typed output objects
     $rows = @(foreach ($name in $finalNames) {
         $m            = $idx.snippets[$name]
-        $pinned       = $m.ContainsKey('pinned') -and $m['pinned'] -eq $true
-        $runCount     = if ($m.ContainsKey('runCount')) { [int]$m['runCount'] } else { 0 }
-        $tagArray     = [string[]]@($m.tags | Where-Object { $_ })
-        $modifiedDate = if ($m.modified) { [datetime]$m.modified } else { $null }
+        $pinned       = $m.Pinned -eq $true
+        $runCount     = $m.RunCount
+        $tagArray     = [string[]]@($m.Tags | Where-Object { $_ })
+        $modifiedDate = if ($m.Modified) { $m.Modified } else { $null }
         $modifiedDisp = if ($modifiedDate) { $modifiedDate | Get-Date -Format 'yyyy-MM-dd' } else { '' }
-        $gistDisplay  = if ($Shared) { '[shared]' } elseif ($m.gistId) { 'linked' } else { '' }
-        $gistUrl      = if (-not $Shared -and $m.gistUrl) { $m.gistUrl } else { '' }
-        $descValue    = if ($m.description) { $m.description } else { '' }
-        $hashValue    = if ($m.ContainsKey('contentHash')) { $m['contentHash'] } else { '' }
+        $gistDisplay  = if ($Shared) { '[shared]' } elseif ($m.GistId) { 'linked' } else { '' }
+        $gistUrl      = if (-not $Shared -and $m.GistUrl) { $m.GistUrl } else { '' }
+        $descValue    = if ($m.Description) { $m.Description } else { '' }
+        $hashValue    = $m.ContentHash
         $sourceValue  = if ($Shared) { '[shared]' } else { 'local' }
-        $authorValue  = if ($m.ContainsKey('createdBy')) { $m['createdBy'] } else { '' }
+        $authorValue  = $m.CreatedBy
         $obj = [pscustomobject]@{
             PSTypeName   = 'PSSnips.SnippetInfo'
             Name         = [string]$name
-            Language     = [string]$m.language
-            Lang         = [string]$m.language
+            Language     = [string]$m.Language
+            Lang         = [string]$m.Language
             Gist         = [string]$gistDisplay
             GistUrl      = [string]$gistUrl
             Source       = [string]$sourceValue
@@ -328,12 +333,12 @@ function Show-Snip {
     if (-not $Raw) {
         $idx = script:LoadIdx
         if ($idx.snippets.ContainsKey($Name)) {
-            $m = $idx.snippets[$Name]; $c = script:LangColor -ext $m.language
+            $m = $idx.snippets[$Name]; $c = script:LangColor -ext $m.Language
             Write-Host ""
             Write-Host ("  ╔═ {0}" -f $Name) -ForegroundColor $c -NoNewline
-            if ($m.description) { Write-Host (" – {0}" -f $m.description) -ForegroundColor DarkGray -NoNewline }
+            if ($m.Description) { Write-Host (" – {0}" -f $m.Description) -ForegroundColor DarkGray -NoNewline }
             Write-Host " ═╗" -ForegroundColor $c
-            if ($m.gistUrl) { Write-Host "  │ Gist: $($m.gistUrl)" -ForegroundColor DarkCyan }
+            if ($m.GistUrl) { Write-Host "  │ Gist: $($m.GistUrl)" -ForegroundColor DarkCyan }
             Write-Host ""
         }
     }
@@ -483,8 +488,7 @@ function New-Snip {
     $newHash = script:GetContentHash -Content $finalContent
     if (-not $IgnoreDuplicate) {
         $dupEntry = $idx.snippets.Keys | Where-Object {
-            $_ -ne $Name -and $idx.snippets[$_].ContainsKey('contentHash') -and
-            $idx.snippets[$_]['contentHash'] -eq $newHash
+            $_ -ne $Name -and $idx.snippets[$_].ContentHash -eq $newHash
         } | Select-Object -First 1
         if ($dupEntry) {
             script:Out-Warn "Duplicate: content is identical to existing snippet '$dupEntry'."
@@ -496,12 +500,15 @@ function New-Snip {
     Set-Content $filePath -Value $finalContent -Encoding UTF8
 
     $snipAuthor = if ($env:USERNAME) { $env:USERNAME } else { 'unknown' }
-    $idx.snippets[$Name] = @{
-        name = $Name; description = $Description; language = $langExt
-        tags = $Tags; created = (Get-Date -Format 'o'); modified = (Get-Date -Format 'o')
-        gistId = $null; gistUrl = $null; contentHash = $newHash
-        createdBy = $snipAuthor; updatedBy = $snipAuthor
-    }
+    $newMeta = [SnippetMetadata]::new()
+    $newMeta.Name        = $Name
+    $newMeta.Description = $Description
+    $newMeta.Language    = $langExt
+    $newMeta.Tags        = $Tags
+    $newMeta.ContentHash = $newHash
+    $newMeta.CreatedBy   = $snipAuthor
+    $newMeta.UpdatedBy   = $snipAuthor
+    $idx.snippets[$Name] = $newMeta
     script:SaveIdx -Idx $idx
     script:UpdateFts -Name $Name
     script:Out-OK "Snippet '$Name' ($langExt) created."
@@ -633,8 +640,7 @@ function Add-Snip {
         $addHash = script:GetContentHash -Content $content
         if (-not $IgnoreDuplicate) {
             $addDup = $idx.snippets.Keys | Where-Object {
-                $_ -ne $Name -and $idx.snippets[$_].ContainsKey('contentHash') -and
-                $idx.snippets[$_]['contentHash'] -eq $addHash
+                $_ -ne $Name -and $idx.snippets[$_].ContentHash -eq $addHash
             } | Select-Object -First 1
             if ($addDup) {
                 script:Out-Warn "Duplicate: content is identical to existing snippet '$addDup'."
@@ -645,12 +651,15 @@ function Add-Snip {
 
         Set-Content $fp -Value $content -Encoding UTF8
         $addAuthor = if ($env:USERNAME) { $env:USERNAME } else { 'unknown' }
-        $idx.snippets[$Name] = @{
-            name = $Name; description = $Description; language = $langExt
-            tags = $Tags; created = (Get-Date -Format 'o'); modified = (Get-Date -Format 'o')
-            gistId = $null; gistUrl = $null; contentHash = $addHash
-            createdBy = $addAuthor; updatedBy = $addAuthor
-        }
+        $addMeta = [SnippetMetadata]::new()
+        $addMeta.Name        = $Name
+        $addMeta.Description = $Description
+        $addMeta.Language    = $langExt
+        $addMeta.Tags        = $Tags
+        $addMeta.ContentHash = $addHash
+        $addMeta.CreatedBy   = $addAuthor
+        $addMeta.UpdatedBy   = $addAuthor
+        $idx.snippets[$Name] = $addMeta
         script:SaveIdx -Idx $idx
         script:UpdateFts -Name $Name
         script:Out-OK "Snippet '$Name' ($langExt, $($content.Length) chars) added."
@@ -788,21 +797,21 @@ function Edit-Snip {
     # Touch the modified timestampand recompute content hash; auto-sync CBH for PS1 files
     $idx = script:LoadIdx
     if ($idx.snippets.ContainsKey($Name)) {
-        $idx.snippets[$Name]['modified']  = Get-Date -Format 'o'
-        $idx.snippets[$Name]['updatedBy'] = if ($env:USERNAME) { $env:USERNAME } else { 'unknown' }
+        $idx.snippets[$Name].Modified  = Get-Date
+        $idx.snippets[$Name].UpdatedBy = if ($env:USERNAME) { $env:USERNAME } else { 'unknown' }
         if (Test-Path $path) {
             $editedContent = Get-Content $path -Raw -Encoding UTF8
-            $idx.snippets[$Name]['contentHash'] = script:GetContentHash -Content $editedContent
+            $idx.snippets[$Name].ContentHash = script:GetContentHash -Content $editedContent
             # Auto-fill empty description/tags from CBH for PowerShell snippets
             $ext = [System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()
             if ($ext -in 'ps1','psm1') {
                 $cbh = script:ParseCBH -Content $editedContent
-                if ($cbh.Synopsis -and -not $idx.snippets[$Name]['description']) {
-                    $idx.snippets[$Name]['description'] = $cbh.Synopsis
+                if ($cbh.Synopsis -and -not $idx.snippets[$Name].Description) {
+                    $idx.snippets[$Name].Description = $cbh.Synopsis
                     script:Out-Info "Description synced from .SYNOPSIS: $($cbh.Synopsis)"
                 }
-                if ($cbh.Tags.Count -gt 0 -and @($idx.snippets[$Name]['tags']).Count -eq 0) {
-                    $idx.snippets[$Name]['tags'] = $cbh.Tags
+                if ($cbh.Tags.Count -gt 0 -and @($idx.snippets[$Name].Tags).Count -eq 0) {
+                    $idx.snippets[$Name].Tags = $cbh.Tags
                     script:Out-Info "Tags synced from .NOTES: $($cbh.Tags -join ', ')"
                 }
             }
@@ -1096,9 +1105,8 @@ function Invoke-Snip {
         try {
             $idxH = script:LoadIdx
             if ($idxH.snippets.ContainsKey($Name)) {
-                $rc = if ($idxH.snippets[$Name].ContainsKey('runCount')) { [int]$idxH.snippets[$Name]['runCount'] } else { 0 }
-                $idxH.snippets[$Name]['runCount'] = $rc + 1
-                $idxH.snippets[$Name]['lastRun']  = Get-Date -Format 'o'
+                $idxH.snippets[$Name].RunCount = $idxH.snippets[$Name].RunCount + 1
+                $idxH.snippets[$Name].LastRun  = Get-Date
                 script:SaveIdx -Idx $idxH
             }
         } catch { Write-Verbose "Run-history update failed (non-fatal): $_" }
@@ -1201,9 +1209,8 @@ function Invoke-Snip {
     try {
         $idxH = script:LoadIdx
         if ($idxH.snippets.ContainsKey($Name)) {
-            $rc = if ($idxH.snippets[$Name].ContainsKey('runCount')) { [int]$idxH.snippets[$Name]['runCount'] } else { 0 }
-            $idxH.snippets[$Name]['runCount'] = $rc + 1
-            $idxH.snippets[$Name]['lastRun']  = Get-Date -Format 'o'
+            $idxH.snippets[$Name].RunCount = $idxH.snippets[$Name].RunCount + 1
+            $idxH.snippets[$Name].LastRun  = Get-Date
             script:SaveIdx -Idx $idxH
         }
     } catch { Write-Verbose "Run-history update failed (non-fatal): $_" }
@@ -1370,7 +1377,7 @@ function Restore-Snip {
         # Update modified timestamp
         $idx = script:LoadIdx
         if ($idx.snippets.ContainsKey($Name)) {
-            $idx.snippets[$Name]['modified'] = Get-Date -Format 'o'
+            $idx.snippets[$Name].Modified = Get-Date
             script:SaveIdx -Idx $idx
         }
         script:Out-OK "Snippet '$Name' restored to version $Version ($(($histFile.LastWriteTime | Get-Date -Format 'yyyy-MM-dd HH:mm:ss')))."
@@ -1621,20 +1628,20 @@ function Set-SnipTag {
     $idx = script:LoadIdx
     if (-not $idx.snippets.ContainsKey($Name)) { Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return }
     $current = [System.Collections.Generic.List[string]]@()
-    if ($idx.snippets[$Name].tags) {
+    if ($idx.snippets[$Name].Tags) {
         # [string[]]@() cast ensures AddRange receives a typed array even when
         # JSON deserialization returns a PSCustomObject or bare string for tags.
-        $current.AddRange([string[]]@($idx.snippets[$Name].tags))
+        $current.AddRange([string[]]@($idx.snippets[$Name].Tags))
     }
     if ($Tags)   { $current.Clear(); $current.AddRange($Tags) }
     foreach ($t in $Add)    { if ($t -notin $current) { $current.Add($t) } }
     foreach ($t in $Remove) { $current.Remove($t) | Out-Null }
-    $idx.snippets[$Name]['tags']     = $current.ToArray()
-    $idx.snippets[$Name]['modified'] = Get-Date -Format 'o'
+    $idx.snippets[$Name].Tags     = $current.ToArray()
+    $idx.snippets[$Name].Modified = Get-Date
 
     # Pin / Unpin — independent of tag operations
-    if ($Pin)   { $idx.snippets[$Name]['pinned'] = $true  }
-    if ($Unpin) { $idx.snippets[$Name]['pinned'] = $false }
+    if ($Pin)   { $idx.snippets[$Name].Pinned = $true  }
+    if ($Unpin) { $idx.snippets[$Name].Pinned = $false }
 
     script:SaveIdx -Idx $idx
     script:Out-OK "Tags updated: $($current -join ', ')"

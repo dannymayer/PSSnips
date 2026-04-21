@@ -200,6 +200,11 @@ function Import-SnipCollection {
             if ($raw) { $raw | ConvertFrom-Json -AsHashtable } else { @{ snippets = @{} } }
         } else { @{ snippets = @{} } }
         if (-not $backupIdx.ContainsKey('snippets')) { $backupIdx['snippets'] = @{} }
+        foreach ($k in @($backupIdx.snippets.Keys)) {
+            if ($backupIdx.snippets[$k] -is [hashtable]) {
+                $backupIdx.snippets[$k] = [SnippetMetadata]::FromHashtable($backupIdx.snippets[$k])
+            }
+        }
 
         # Locate the backup snippets directory
         $backupSnipDir = Join-Path $extractDir 'snippets'
@@ -220,7 +225,7 @@ function Import-SnipCollection {
                 # Skip conflict unless -Force
                 if ($localIdx.snippets.ContainsKey($snipName) -and -not $Force) { continue }
 
-                $lang    = $backupIdx.snippets[$snipName]['language']
+                $lang    = $backupIdx.snippets[$snipName].Language
                 $srcFile = Join-Path $backupSnipDir "$snipName.$lang"
                 if (-not (Test-Path $srcFile)) {
                     $found = @(Get-ChildItem $backupSnipDir -Filter "$snipName.*" -ErrorAction SilentlyContinue)
