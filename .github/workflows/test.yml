@@ -38,9 +38,10 @@ jobs:
       - name: Run PSScriptAnalyzer
         run: |
           Import-Module PSScriptAnalyzer
-          $results = Invoke-ScriptAnalyzer -Path .\PSSnips.psm1 -Settings .\PSScriptAnalyzerSettings.psd1
+          $files = @('.\PSSnips.psm1') + (Get-ChildItem .\Private, .\Public -Filter '*.ps1' -Recurse | Select-Object -ExpandProperty FullName)
+          $results = $files | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Settings .\PSScriptAnalyzerSettings.psd1 }
           if ($results) {
-              $results | Format-Table RuleName, Severity, Line, Message -AutoSize
+              $results | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize
               throw "PSScriptAnalyzer found $($results.Count) issue(s)"
           }
           Write-Host "PSScriptAnalyzer: clean"

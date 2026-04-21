@@ -45,8 +45,9 @@ jobs:
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          $results = Invoke-ScriptAnalyzer -Path .\PSSnips.psm1 -Settings .\PSScriptAnalyzerSettings.psd1 -Severity Error
-          if ($results) { $results | Format-Table; throw "PSSA errors found — aborting publish" }
+          $files = @('.\PSSnips.psm1') + (Get-ChildItem .\Private, .\Public -Filter '*.ps1' -Recurse | Select-Object -ExpandProperty FullName)
+          $results = $files | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Settings .\PSScriptAnalyzerSettings.psd1 }
+          if ($results) { $results | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize; throw "PSSA errors found — aborting publish" }
 
       - name: Publish to PowerShell Gallery
         shell: pwsh
