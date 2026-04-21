@@ -79,3 +79,6 @@ $script:FtsCacheFile = ''
 # Event handler registry: hashtable of event-name → hashtable of (id → scriptblock)
 $script:EventRegistry = @{}
 
+# Active repository instance (set by InitEnv)
+$script:Repository = $null
+

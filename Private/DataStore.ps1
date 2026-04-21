@@ -228,13 +228,30 @@ function script:InitEnv {
         script:SaveCfg -Cfg $def
     }
     if (-not (Test-Path $script:IdxFile)) { script:SaveIdx -Idx @{ snippets = @{} } }
+
+    if ($null -eq $script:Repository) {
+        $script:Repository = [JsonSnipRepository]::new($script:Home)
+    }
+
     script:InvalidateCache
 }
 
 function script:InvalidateCache {
-    $script:IdxDirty     = $true
-    $script:CfgDirty     = $true
+    $script:IdxDirty       = $true
+    $script:CfgDirty       = $true
     $script:CompleterCache = $null
-    $script:FtsCache     = $null
+    $script:FtsCache       = $null
+    # Directly set dirty flags on repository to avoid circular call
+    if ($null -ne $script:Repository) {
+        $script:Repository._idxDirty = $true
+        $script:Repository._cfgDirty = $true
+    }
 }
+
+# Delegate scriptblocks: allow JsonSnipRepository class methods to call script: functions
+$script:_LoadIdxDelegate    = { script:LoadIdx }
+$script:_SaveIdxDelegate    = { param($i) script:SaveIdx -Idx $i }
+$script:_LoadCfgDelegate    = { script:LoadCfg }
+$script:_SaveCfgDelegate    = { param($c, $s) script:SaveCfg -Cfg $c -Scope $s }
+$script:_InvalidateDelegate = { script:InvalidateCache }
 

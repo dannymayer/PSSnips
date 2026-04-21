@@ -773,3 +773,28 @@ Describe 'Sharing: Shared storage' {
         ($row.Source -eq '[shared]' -or $row.Gist -eq '[shared]') | Should -BeTrue
     }
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+Describe '[JsonSnipRepository]' {
+    BeforeAll {
+        $tmpDir = Join-Path $TestDrive 'repo-test'
+        New-Item -ItemType Directory -Path (Join-Path $tmpDir 'snippets') -Force | Out-Null
+        '{ "snippets": {} }' | Set-Content -Path (Join-Path $tmpDir 'index.json') -Encoding UTF8
+    }
+
+    It 'is initialized after InitEnv' {
+        $repoType = & (Get-Module PSSnips) {
+            script:InitEnv
+            $script:Repository.GetType().Name
+        }
+        $repoType | Should -Be 'JsonSnipRepository'
+    }
+
+    It 'InvalidateCache sets dirty flags' {
+        & (Get-Module PSSnips) {
+            $script:Repository.InvalidateCache()
+            $script:Repository._idxDirty | Should -BeTrue
+        }
+    }
+}

@@ -6,13 +6,16 @@ Set-StrictMode -Version Latest
 
 # Load private files in dependency order
 foreach ($file in @(
-    'Private\Models.ps1',    # class definitions — must be first
+    'Private\Models.ps1',             # class definitions — must be first
+    'Private\RepositoryBase.ps1',     # base class (before JsonSnipRepository)
     'Private\Data.ps1',
     'Private\Logging.ps1',
     'Private\Parsing.ps1',
     'Private\EventDispatch.ps1',
     'Private\IO.ps1',
-    'Private\DataStore.ps1',
+    'Private\DataStore.ps1',          # InitEnv + delegate scriptblocks defined here
+    'Private\JsonSnipRepository.ps1', # concrete repository (after DataStore so delegates exist)
+    'Private\RepositoryFactory.ps1',
     'Private\Credentials.ps1',
     'Private\ApiClients.ps1',
     'Private\Fts.ps1',
