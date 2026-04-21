@@ -40,6 +40,38 @@
     VariablesToExport = @()
     FormatsToProcess  = @('PSSnips.Format.ps1xml')
 
+    FileList = @(
+        'PSSnips.psm1',
+        'PSSnips.psd1',
+        'PSSnips.Format.ps1xml',
+        'Private\Data.ps1',
+        'Private\Logging.ps1',
+        'Private\Parsing.ps1',
+        'Private\EventDispatch.ps1',
+        'Private\IO.ps1',
+        'Private\DataStore.ps1',
+        'Private\Credentials.ps1',
+        'Private\ApiClients.ps1',
+        'Private\Fts.ps1',
+        'Private\Audit.ps1',
+        'Private\Helpers.ps1',
+        'Private\Highlighting.ps1',
+        'Private\Completers.ps1',
+        'Public\Config.ps1',
+        'Public\Core.ps1',
+        'Public\Backup.ps1',
+        'Public\GitHub.ps1',
+        'Public\GitLab.ps1',
+        'Public\Bitbucket.ps1',
+        'Public\Sharing.ps1',
+        'Public\Profile.ps1',
+        'Public\TUI.ps1',
+        'Public\Dispatcher.ps1',
+        'Public\Analytics.ps1',
+        'Public\Templates.ps1',
+        'Public\Linting.ps1'
+    )
+
     PrivateData = @{
         PSData = @{
             Tags             = @(
