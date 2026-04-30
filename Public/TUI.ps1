@@ -86,8 +86,21 @@ function Start-SnipManager {
             Write-Host "  (no snippets — press [n] to create one)$(' ' * 20)" -ForegroundColor DarkGray
         } else {
             $visible = [Math]::Min($list.Count, 20)
+            $allNs = @($list | ForEach-Object {
+                if ($_.Name -match '/') { ($_.Name -split '/')[0] } else { '' }
+            } | Sort-Object -Unique)
+            $showNsHeaders = $allNs.Count -ge 2
+            $currentNs = $null
             for ($i = 0; $i -lt $visible; $i++) {
                 $item  = $list[$i]
+                if ($showNsHeaders) {
+                    $ns = if ($item.Name -match '/') { ($item.Name -split '/')[0] } else { '' }
+                    if ($ns -ne $currentNs) {
+                        $currentNs = $ns
+                        $headerLabel = if ($ns) { "── $ns ──" } else { "── (no namespace) ──" }
+                        Write-Host ("  $headerLabel") -ForegroundColor DarkGray
+                    }
+                }
                 $c     = script:LangColor -ext $item.Meta.language
                 $gmark = if ($item.Meta.gistId) { ' [G]' } else { '    ' }
                 $desc  = if ($item.Meta.description) { "  $($item.Meta.description)" } else { '' }

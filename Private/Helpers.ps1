@@ -7,6 +7,12 @@ function script:GetContentHash {
 }
 
 
+function script:Get-SnipNamespace {
+    param([string]$Name)
+    if ($Name -match '/') { return ($Name -split '/')[0] } else { return '' }
+}
+
+
 function script:SaveVersion {
     param([string]$Name, [string]$FilePath)
     if (-not $FilePath -or -not (Test-Path $FilePath)) { return }

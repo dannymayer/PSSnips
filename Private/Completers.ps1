@@ -16,3 +16,16 @@ $snipNameCompleter = {
 Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip','Show-Snip','Edit-Snip','Invoke-Snip','Remove-Snip','Copy-Snip','Export-Gist','Sync-Gist','Set-SnipTag','Invoke-SnipLint','Test-SnipLint' -ParameterName Name -ScriptBlock $snipNameCompleter
 Register-ArgumentCompleter -CommandName 'Invoke-SnipCLI','snip' -ParameterName Arg1 -ScriptBlock $snipNameCompleter
 
+Register-ArgumentCompleter -CommandName 'Get-Snip' -ParameterName 'Namespace' -ScriptBlock {
+    param($commandName, $paramName, $wordToComplete, $commandAst, $fakeBoundParams)
+    $null = $commandName, $paramName, $commandAst, $fakeBoundParams
+    script:InitEnv
+    $idx = script:LoadIdx
+    $idx.snippets.Keys |
+        Where-Object { $_ -match '/' } |
+        ForEach-Object { ($_ -split '/')[0] } |
+        Sort-Object -Unique |
+        Where-Object { $_ -like "$wordToComplete*" } |
+        ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+}
+

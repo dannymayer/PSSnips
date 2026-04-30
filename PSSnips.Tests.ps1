@@ -772,6 +772,48 @@ Describe 'Sharing: Shared storage' {
         $row | Should -Not -BeNullOrEmpty
         ($row.Source -eq '[shared]' -or $row.Gist -eq '[shared]') | Should -BeTrue
     }
+
+    It 'Append-SharedAudit skips gracefully when SharedSnippetsDir not set' {
+        $tmpCfgDir = Join-Path $env:TEMP "PSSnips-AuditTest-$(New-Guid)"
+        New-Item -ItemType Directory -Path $tmpCfgDir -Force | Out-Null
+        try {
+            & (Get-Module PSSnips) {
+                param($Dir)
+                $saved = $script:Home
+                $script:Home    = $Dir
+                $script:CfgFile = Join-Path $Dir 'config.json'
+                @{} | ConvertTo-Json | Set-Content $script:CfgFile -Encoding UTF8
+                { script:Append-SharedAudit 'Publish' 'test-snip' } | Should -Not -Throw
+                $script:Home    = $saved
+                $script:CfgFile = Join-Path $saved 'config.json'
+            } $tmpCfgDir
+        } finally {
+            Remove-Item $tmpCfgDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Get-SnipAuditLog -Shared warns when SharedSnippetsDir not configured' {
+        $tmpCfgDir = Join-Path $env:TEMP "PSSnips-AuditWarnTest-$(New-Guid)"
+        New-Item -ItemType Directory -Path $tmpCfgDir -Force | Out-Null
+        try {
+            & (Get-Module PSSnips) {
+                param($Dir)
+                $saved          = $script:Home
+                $script:Home    = $Dir
+                $script:CfgFile = Join-Path $Dir 'config.json'
+                @{} | ConvertTo-Json | Set-Content $script:CfgFile -Encoding UTF8
+            } $tmpCfgDir
+            $warnings = @(Get-SnipAuditLog -Shared 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+            $warnings.Count | Should -BeGreaterOrEqual 1
+        } finally {
+            & (Get-Module PSSnips) {
+                param($Dir)
+                $script:Home    = $Dir
+                $script:CfgFile = Join-Path $Dir 'config.json'
+            } $script:TestRoot
+            Remove-Item $tmpCfgDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -885,5 +927,55 @@ Describe 'Sync-SnipRepo' {
         # so a clone (if needed) would be blocked; if no repo dir exists we get no output object.
         # Test only what we can guarantee: function does not throw.
         $true | Should -BeTrue
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+Describe 'Namespace: Get-Snip -Namespace filtering' {
+    BeforeAll {
+        Clear-TestState
+        # Inject namespaced index entries directly (slashes are not valid in Windows
+        # file names, so we seed the index without creating actual snippet files).
+        & (Get-Module PSSnips) {
+            $idx = script:LoadIdx
+            foreach ($entry in @(
+                @{ key = 'azure/deploy';   lang = 'ps1'; desc = 'Azure deploy'  },
+                @{ key = 'azure/monitor';  lang = 'ps1'; desc = 'Azure monitor' },
+                @{ key = 'devops/ci/lint'; lang = 'ps1'; desc = 'CI lint'       },
+                @{ key = 'local-util';     lang = 'ps1'; desc = 'No namespace'  }
+            )) {
+                $sm             = [SnippetMetadata]::new()
+                $sm.Name        = $entry.key
+                $sm.Language    = $entry.lang
+                $sm.Description = $entry.desc
+                $idx.snippets[$entry.key] = $sm
+            }
+            script:SaveIdx -Idx $idx
+        }
+    }
+
+    It 'Get-Snip -Namespace returns only snippets with matching prefix' {
+        $rows = @(Get-Snip -Namespace 'azure')
+        $rows.Count | Should -Be 2
+        $rows.Name | Should -Contain 'azure/deploy'
+        $rows.Name | Should -Contain 'azure/monitor'
+        $rows.Name | Should -Not -Contain 'devops/ci/lint'
+        $rows.Name | Should -Not -Contain 'local-util'
+    }
+
+    It 'Get-Snip -Namespace empty string returns all snippets' {
+        $rows = @(Get-Snip -Namespace '')
+        $rows.Count | Should -Be 4
+    }
+
+    It 'Get-Snip output includes Namespace property derived from name' {
+        $rows = @(Get-Snip -Namespace 'azure')
+        $rows | ForEach-Object { $_.Namespace | Should -Be 'azure' }
+    }
+
+    It 'Get-Snip Namespace property is empty for snippets without slash' {
+        $row = @(Get-Snip -Filter 'local-util') | Select-Object -First 1
+        $row.Namespace | Should -Be ''
     }
 }

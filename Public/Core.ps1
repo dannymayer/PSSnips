@@ -36,6 +36,12 @@ function Get-Snip {
         snippet file is also searched for the filter string (case-insensitive).
         Files that cannot be read are silently skipped.
 
+    .PARAMETER Namespace
+        Optional. Filters results to snippets whose name begins with the given
+        namespace prefix (the segment before the first '/').  For example,
+        -Namespace azure returns 'azure/deploy' but not 'devops/ci/lint' or
+        'my-snippet'. An empty string (the default) returns all snippets.
+
     .PARAMETER SortBy
         Optional. Controls the sort order of the output. Accepted values:
           Name      – alphabetical ascending (default)
@@ -90,6 +96,7 @@ function Get-Snip {
           Runs         [int]      – run count
           Pinned       [bool]     – whether snippet is pinned
           ContentHash  [string]   – SHA hash of snippet content from index
+          Namespace    [string]   – namespace prefix (segment before first '/')
 
         Returns nothing (displays an info message) when no snippets match.
 
@@ -112,7 +119,9 @@ function Get-Snip {
         [string]$SortBy = 'Name',
         [switch]$Shared,
         [Parameter(ParameterSetName='List')]
-        [string]$Author = ''
+        [string]$Author = '',
+        [Parameter(HelpMessage='Filter snippets by namespace prefix (e.g. azure, devops/ci)')]
+        [string]$Namespace = ''
     )
     script:InitEnv
     $idx = if ($Shared) {
@@ -155,7 +164,8 @@ function Get-Snip {
               ($Content -and $Filter -and (script:SearchSnipContent -Name $name -SearchString $Filter))
         $mt = -not $Tag      -or (@($m.Tags) -contains $Tag)
         $ml = -not $Language -or $m.Language -eq $Language
-        if ($mf -and $mt -and $ml) { $matchedNames.Add($name) }
+        $mn = -not $Namespace -or (script:Get-SnipNamespace $name) -eq $Namespace
+        if ($mf -and $mt -and $ml -and $mn) { $matchedNames.Add($name) }
     }
 
     # Phase 2: Sort by $SortBy
@@ -219,6 +229,7 @@ function Get-Snip {
             Pinned       = [bool]$pinned
             ContentHash  = [string]$hashValue
             Author       = [string]$authorValue
+            Namespace    = [string](script:Get-SnipNamespace $name)
         }
         $obj
     })
