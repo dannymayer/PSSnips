@@ -46,7 +46,9 @@ foreach ($file in @(
     'Public\Dispatcher.ps1',
     'Public\Analytics.ps1',
     'Public\Templates.ps1',
-    'Public\Linting.ps1'
+    'Public\Linting.ps1',
+    'Public\Compare.ps1',
+    'Public\GitSync.ps1'
 )) {
     . (Join-Path $PSScriptRoot $file)
 }
@@ -128,5 +130,7 @@ Export-ModuleMember -Function @(
     'Initialize-SnipPreCommitHook',
     'Sync-SnipMetadata',
     'Register-SnipEvent', 'Unregister-SnipEvent',
-    'Invoke-SnipLint', 'Test-SnipLint'
+    'Invoke-SnipLint', 'Test-SnipLint',
+    'Compare-SnipCollection',
+    'Sync-SnipRepo'
 ) -Alias 'snip'

@@ -776,6 +776,64 @@ Describe 'Sharing: Shared storage' {
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+Describe 'Compare-SnipCollection' {
+    BeforeAll {
+        Clear-TestState
+        # Create a local snippet that will be "in both" (Unchanged)
+        New-Snip -Name 'cmp-existing' -Language 'ps1' -Content '# existing' *>&1 | Out-Null
+
+        # Export a zip containing 'cmp-existing' plus a new 'cmp-archive-only' snippet
+        $script:CmpZip = Join-Path $script:TestRoot 'cmp-test.zip'
+        Export-SnipCollection -Path $script:CmpZip *>&1 | Out-Null
+
+        # Now inject 'cmp-archive-only' directly into the zip's index
+        # by rebuilding the archive with an extra snippet entry
+        $expandDir = Join-Path $script:TestRoot 'cmp-expand'
+        Expand-Archive -Path $script:CmpZip -DestinationPath $expandDir -Force
+
+        $idxRaw = Get-Content (Join-Path $expandDir 'index.json') -Raw | ConvertFrom-Json -AsHashtable
+        $idxRaw['snippets']['cmp-archive-only'] = @{
+            name        = 'cmp-archive-only'
+            language    = 'ps1'
+            contentHash = 'deadbeef1234'
+            modified    = (Get-Date).ToString('o')
+            tags        = @()
+        }
+        $idxRaw | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $expandDir 'index.json') -Encoding UTF8
+
+        # Write a dummy snippet file so the zip is valid
+        $snipDir = Join-Path $expandDir 'snippets'
+        if (-not (Test-Path $snipDir)) { New-Item -ItemType Directory $snipDir -Force | Out-Null }
+        '# archive only' | Set-Content (Join-Path $snipDir 'cmp-archive-only.ps1') -Encoding UTF8
+
+        Remove-Item $script:CmpZip -Force -ErrorAction SilentlyContinue
+        Compress-Archive -Path (Join-Path $expandDir '*') -DestinationPath $script:CmpZip
+        Remove-Item $expandDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Compare-SnipCollection -PassThru returns array of PSCustomObject' {
+        $result = Compare-SnipCollection -Path $script:CmpZip -PassThru
+        $result | Should -Not -BeNullOrEmpty
+        $result[0].GetType().Name | Should -Be 'PSCustomObject'
+    }
+
+    It 'Compare-SnipCollection returns Added for new archive snippets' {
+        $result = Compare-SnipCollection -Path $script:CmpZip -PassThru
+        $added = $result | Where-Object { $_.Name -eq 'cmp-archive-only' }
+        $added | Should -Not -BeNullOrEmpty
+        $added.Status | Should -Be 'Added'
+    }
+
+    It 'Compare-SnipCollection returns Unchanged for matching snippets' {
+        $result = Compare-SnipCollection -Path $script:CmpZip -PassThru
+        $unch = $result | Where-Object { $_.Name -eq 'cmp-existing' }
+        $unch | Should -Not -BeNullOrEmpty
+        $unch.Status | Should -Be 'Unchanged'
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 Describe '[JsonSnipRepository]' {
     BeforeAll {
         $tmpDir = Join-Path $TestDrive 'repo-test'

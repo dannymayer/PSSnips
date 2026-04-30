@@ -15,7 +15,7 @@
         'Get-Snip', 'Show-Snip', 'New-Snip', 'Add-Snip', 'Remove-Snip',
         'Edit-Snip', 'Invoke-Snip', 'Copy-Snip', 'Set-SnipTag',
         'Get-SnipHistory', 'Restore-Snip', 'Test-Snip',
-        'Export-SnipCollection', 'Import-SnipCollection',
+        'Export-SnipCollection', 'Import-SnipCollection', 'Compare-SnipCollection',
         'Get-GistList', 'Get-Gist', 'Import-Gist', 'Export-Gist', 'Invoke-Gist', 'Sync-Gist',
         'Get-GitLabSnipList', 'Get-GitLabSnip', 'Import-GitLabSnip', 'Export-GitLabSnip',
         'Get-BitbucketSnipList', 'Import-BitbucketSnip', 'Export-BitbucketSnip', 'Sync-BitbucketSnips',
@@ -33,7 +33,8 @@
         'Initialize-SnipPreCommitHook',
         'Sync-SnipMetadata',
         'Register-SnipEvent', 'Unregister-SnipEvent',
-        'Invoke-SnipLint', 'Test-SnipLint'
+        'Invoke-SnipLint', 'Test-SnipLint',
+        'Sync-SnipRepo'
     )
 
     AliasesToExport   = @('snip')
@@ -76,7 +77,9 @@
         'Public\Dispatcher.ps1',
         'Public\Analytics.ps1',
         'Public\Templates.ps1',
-        'Public\Linting.ps1'
+        'Public\Linting.ps1',
+        'Public\Compare.ps1',
+        'Public\GitSync.ps1'
     )
 
     PrivateData = @{
