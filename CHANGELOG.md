@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to [PSSnips](https://github.com/dannymayer/PSSnips) are documented in this file.
 
@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+
+## [3.1.0] — 2026-05-01
+
+### Added
+
+- **`Sync-SnipRepo`** (`Public\GitSync.ps1`) — git-backed snippet repository sync.
+  - `-Pull`, `-Push`, `-Status` modes; default is bidirectional pull-then-push.
+  - `-Remote <url>` one-shot URL override; reads `SnipRepoUrl`/`SnipRepoDir` from config.
+  - Auto-clones if `SnipRepoDir` does not exist. Graceful error if `git` not in PATH.
+  - `SupportsShouldProcess` gates all write operations. Returns `[PSCustomObject]` with
+    `Status`, `Branch`, `Changes`.
+
+- **`Compare-SnipCollection`** (`Public\Compare.ps1`) — diff preview before import.
+  - `-Path <zip>` accepts an `Export-SnipCollection` archive.
+  - Classifies each snippet as **Added**, **Modified**, **Unchanged**, or **LocalOnly**.
+  - Displays formatted preview table with per-category counts.
+  - `-PassThru` returns structured `[PSCustomObject]` array for scripting.
+  - Temp directory cleaned up in `try/finally` even on error.
+
+- **Namespace prefix** (`ns/name` hierarchy, no schema change).
+  - `Get-Snip -Namespace <prefix>` filters by first `/`-delimited segment of snippet name.
+  - `Namespace` property added to all `Get-Snip` output objects.
+  - TUI (`Start-SnipManager`) displays dim `── <namespace> ──` group headers when ≥2
+    distinct namespaces are present in the filtered list.
+  - `Register-ArgumentCompleter` for `Get-Snip -Namespace` tab-completes from live index.
+  - Private helper `script:Get-SnipNamespace` added to `Private\Helpers.ps1`.
+
+- **Centralized shared audit log**.
+  - `script:Append-SharedAudit` helper (`Private\Audit.ps1`) appends entries to
+    `<SharedSnippetsDir>/shared-audit.json` on every successful publish or sync.
+  - Entry fields: `timestamp` (ISO 8601), `operation` (`Publish`/`Sync`), `snippetName`,
+    `user` (`DOMAIN\username`), `machine` (`$env:COMPUTERNAME`).
+  - `Publish-Snip` and `Sync-SharedSnips` call `Append-SharedAudit` after success.
+  - `Get-SnipAuditLog -Shared` switch reads and returns the shared log as `[PSCustomObject]`
+    array; warns if `SharedSnippetsDir` is not configured.
 
 ## [3.0.0] — 2026-04-21
 
