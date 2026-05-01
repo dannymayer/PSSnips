@@ -74,6 +74,7 @@ function Publish-Snip {
             if (Test-Path "$sharedIdxFile.tmp") { Remove-Item "$sharedIdxFile.tmp" -ErrorAction SilentlyContinue }
         }
         script:Out-OK "Published '$Name' to shared storage: $destFile"
+        script:Append-SharedAudit 'Publish' $Name
     }
 }
 
@@ -143,5 +144,6 @@ function Sync-SharedSnips {
     }
     script:SaveIdx -Idx $localIdx
     script:Out-OK "Synced $synced new snippet(s) from shared storage."
+    script:Append-SharedAudit 'Sync' ''
 }
 

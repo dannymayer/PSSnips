@@ -748,6 +748,11 @@ function Get-SnipAuditLog {
     .PARAMETER SnippetName
         Optional. Filter entries to a specific snippet name.
 
+    .PARAMETER Shared
+        Optional switch. Reads the shared audit log at <SharedSnippetsDir>/shared-audit.json
+        instead of the local audit log. If SharedSnippetsDir is not configured, emits a
+        warning and returns without output.
+
     .EXAMPLE
         Get-SnipAuditLog
 
@@ -763,16 +768,23 @@ function Get-SnipAuditLog {
 
         Displays all audit events for the 'deploy-script' snippet.
 
+    .EXAMPLE
+        Get-SnipAuditLog -Shared
+
+        Displays all entries from the shared audit log.
+
     .INPUTS
         None. This function does not accept pipeline input.
 
     .OUTPUTS
         System.Management.Automation.PSCustomObject[]
         Each object has: Timestamp, Operation, SnippetName, User.
+        When -Shared is used, each object also has: Machine.
 
     .NOTES
         The audit log is written to ~/.pssnips/audit.log in NDJSON format.
         The log is automatically rotated when it exceeds 10 MB (renamed to audit.log.1).
+        The shared audit log is written to <SharedSnippetsDir>/shared-audit.json as a JSON array.
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject[]])]
@@ -780,9 +792,42 @@ function Get-SnipAuditLog {
         [ValidateRange(1, [int]::MaxValue)]
         [int]$Last = 50,
         [string]$Operation   = '',
-        [string]$SnippetName = ''
+        [string]$SnippetName = '',
+        [switch]$Shared
     )
     script:InitEnv
+
+    if ($Shared) {
+        $cfg           = script:LoadCfg
+        $sharedDirPath = if ($cfg.ContainsKey('SharedSnippetsDir')) { $cfg['SharedSnippetsDir'] } else { '' }
+        if (-not $sharedDirPath) {
+            Write-Warning 'SharedSnippetsDir is not configured. Run: Set-SnipConfig -SharedSnippetsDir <path>'
+            return @()
+        }
+        if (-not (Test-Path $sharedDirPath)) {
+            Write-Warning "SharedSnippetsDir '$sharedDirPath' is not accessible."
+            return @()
+        }
+        $auditPath = Join-Path $sharedDirPath 'shared-audit.json'
+        if (-not (Test-Path $auditPath)) {
+            script:Out-Info 'No shared audit log found.'
+            return @()
+        }
+        $raw = Get-Content $auditPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        $parsed = try { $raw | ConvertFrom-Json } catch { $null }
+        if (-not $parsed) { return @() }
+        $sharedEntries = @($parsed) | ForEach-Object {
+            [pscustomobject]@{
+                Timestamp   = $_.timestamp
+                Operation   = $_.operation
+                SnippetName = $_.snippetName
+                User        = $_.user
+                Machine     = $_.machine
+            }
+        }
+        return $sharedEntries
+    }
+
     $auditFile = Join-Path $script:Home 'audit.log'
     if (-not (Test-Path $auditFile)) {
         script:Out-Info 'No audit log found.'

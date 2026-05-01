@@ -32,3 +32,30 @@ function script:GetSharedDir {
     return $dir
 }
 
+function script:Append-SharedAudit {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseApprovedVerbs', '')]
+    param(
+        [string]$Operation,
+        [string]$SnippetName
+    )
+    $sharedDir = script:GetSharedDir
+    if (-not $sharedDir) { return }
+    $auditPath = Join-Path $sharedDir 'shared-audit.json'
+    $entry = @{
+        timestamp   = (Get-Date -Format 'o')
+        operation   = $Operation
+        snippetName = $SnippetName
+        user        = "$env:USERDOMAIN\$env:USERNAME"
+        machine     = $env:COMPUTERNAME
+    }
+    $existing = if (Test-Path $auditPath) {
+        try { Get-Content $auditPath -Raw | ConvertFrom-Json -AsHashtable } catch { @() }
+    } else { @() }
+    $list = [System.Collections.Generic.List[object]]::new()
+    if ($existing -is [array]) { foreach ($e in $existing) { $list.Add($e) } }
+    elseif ($null -ne $existing) { $list.Add($existing) }
+    $list.Add($entry)
+    $json = $list | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($auditPath, $json, (New-Object System.Text.UTF8Encoding $true))
+}
+
