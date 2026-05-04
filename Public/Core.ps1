@@ -121,7 +121,10 @@ function Get-Snip {
         [Parameter(ParameterSetName='List')]
         [string]$Author = '',
         [Parameter(HelpMessage='Filter snippets by namespace prefix (e.g. azure, devops/ci)')]
-        [string]$Namespace = ''
+        [string]$Namespace = '',
+        [Parameter(HelpMessage='Filter snippets to those compatible with the specified platform')]
+        [ValidateSet('windows','linux','macos')]
+        [string]$Platform = ''
     )
     script:InitEnv
     $idx = if ($Shared) {
@@ -165,7 +168,8 @@ function Get-Snip {
         $mt = -not $Tag      -or (@($m.Tags) -contains $Tag)
         $ml = -not $Language -or $m.Language -eq $Language
         $mn = -not $Namespace -or (script:Get-SnipNamespace $name) -eq $Namespace
-        if ($mf -and $mt -and $ml -and $mn) { $matchedNames.Add($name) }
+        $mp = -not $Platform  -or (-not $m.Platforms) -or (@($m.Platforms) -contains $Platform)
+        if ($mf -and $mt -and $ml -and $mn -and $mp) { $matchedNames.Add($name) }
     }
 
     # Phase 2: Sort by $SortBy
@@ -230,6 +234,7 @@ function Get-Snip {
             ContentHash  = [string]$hashValue
             Author       = [string]$authorValue
             Namespace    = [string](script:Get-SnipNamespace $name)
+            Platforms    = [string[]]@($m.Platforms | Where-Object { $_ })
         }
         $obj
     })
@@ -468,7 +473,9 @@ function New-Snip {
         [string]$Content     = '',
         [string]$Editor      = '',
         [switch]$Force,
-        [switch]$IgnoreDuplicate
+        [switch]$IgnoreDuplicate,
+        [Parameter(HelpMessage='Target platform(s): windows, linux, macos. Empty = all platforms.')]
+        [string[]]$Platforms = @()
     )
     script:InitEnv
     $cfg = script:LoadCfg
@@ -519,6 +526,7 @@ function New-Snip {
     $newMeta.ContentHash = $newHash
     $newMeta.CreatedBy   = $snipAuthor
     $newMeta.UpdatedBy   = $snipAuthor
+    $newMeta.Platforms   = $Platforms
     $idx.snippets[$Name] = $newMeta
     script:SaveIdx -Idx $idx
     script:UpdateFts -Name $Name
@@ -976,7 +984,10 @@ function Invoke-Snip {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(ParameterSetName='Single')]
-        [string]$ConnectionString = ''
+        [string]$ConnectionString = '',
+
+        [Parameter(ParameterSetName='Single')]
+        [switch]$Force
     )
 
     # ── Chain / Pipeline mode ────────────────────────────────────────────────
@@ -1030,6 +1041,22 @@ function Invoke-Snip {
     script:InitEnv
     $path = script:FindFile -Name $Name
     if (-not $path -or -not (Test-Path $path)) { Write-Error "Snippet '$Name' not found." -ErrorAction Continue; return }
+
+    # Platform guard
+    $snipIdx  = script:LoadIdx
+    $snipMeta = if ($snipIdx.snippets.ContainsKey($Name)) { $snipIdx.snippets[$Name] } else { $null }
+    if ($snipMeta -and $snipMeta.Platforms -and $snipMeta.Platforms.Count -gt 0) {
+        $currentPlatform = if ($IsWindows) { 'windows' } elseif ($IsLinux) { 'linux' } elseif ($IsMacOS) { 'macos' } else { 'windows' }
+        if ($snipMeta.Platforms -notcontains $currentPlatform) {
+            $platformList = $snipMeta.Platforms -join ', '
+            if ($Force) {
+                script:Out-Warn "Snippet '$Name' targets [$platformList] but running on $currentPlatform. Proceeding (-Force)."
+            } else {
+                Write-Error "Snippet '$Name' targets [$platformList] and cannot run on $currentPlatform. Use -Force to override." -ErrorAction Continue
+                return
+            }
+        }
+    }
 
     $ext     = [System.IO.Path]::GetExtension($path).TrimStart('.').ToLower()
     $content = Get-Content $path -Raw -Encoding UTF8

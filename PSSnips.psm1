@@ -48,7 +48,8 @@ foreach ($file in @(
     'Public\Templates.ps1',
     'Public\Linting.ps1',
     'Public\Compare.ps1',
-    'Public\GitSync.ps1'
+    'Public\GitSync.ps1',
+    'Public\PSReadLine.ps1'
 )) {
     . (Join-Path $PSScriptRoot $file)
 }
@@ -117,7 +118,7 @@ Export-ModuleMember -Function @(
     'Get-BitbucketSnipList', 'Import-BitbucketSnip', 'Export-BitbucketSnip', 'Sync-BitbucketSnips',
     'Get-RemoteSnip', 'Sync-RemoteSnip',
     'Publish-Snip', 'Sync-SharedSnips',
-    'Install-PSSnips', 'Uninstall-PSSnips',
+    'Install-PSSnips', 'Uninstall-PSSnips', 'Set-SnipReadLineKey',
     'Start-SnipManager',
     'Get-SnipHistory', 'Restore-Snip', 'Test-Snip',
     'Invoke-SnipCLI',

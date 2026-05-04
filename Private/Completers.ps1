@@ -29,3 +29,11 @@ Register-ArgumentCompleter -CommandName 'Get-Snip' -ParameterName 'Namespace' -S
         ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
 }
 
+Register-ArgumentCompleter -CommandName 'New-Snip' -ParameterName 'Platforms' -ScriptBlock {
+    param($commandName, $paramName, $wordToComplete, $commandAst, $fakeBoundParams)
+    $null = $commandName, $paramName, $commandAst, $fakeBoundParams
+    @('windows','linux','macos') |
+        Where-Object { $_ -like "$wordToComplete*" } |
+        ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
+}
+

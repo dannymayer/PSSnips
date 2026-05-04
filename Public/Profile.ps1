@@ -29,7 +29,8 @@ function Install-PSSnips {
     param(
         [ValidateSet('CurrentUserCurrentHost','CurrentUserAllHosts','AllUsersCurrentHost','AllUsersAllHosts')]
         [string]$Scope = 'CurrentUserCurrentHost',
-        [switch]$Force
+        [switch]$Force,
+        [switch]$IncludeReadLineKey
     )
     script:InitEnv
     $profilePath = $PROFILE.$Scope
@@ -54,6 +55,12 @@ function Install-PSSnips {
         Add-Content $profilePath -Value "`n$importLine" -Encoding UTF8
         script:Out-OK "PSSnips added to profile: $profilePath"
         script:Out-Info "Restart PowerShell or run: . `"$profilePath`""
+
+        if ($IncludeReadLineKey) {
+            $keyLine = "`nSet-SnipReadLineKey  # PSSnips hotkey (Ctrl+Alt+S)"
+            Add-Content $profilePath -Value $keyLine -Encoding UTF8
+            script:Out-Info "PSReadLine hotkey configured. Press Ctrl+Alt+S to open snippet picker."
+        }
     }
 }
 

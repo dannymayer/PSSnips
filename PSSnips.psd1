@@ -34,7 +34,8 @@
         'Sync-SnipMetadata',
         'Register-SnipEvent', 'Unregister-SnipEvent',
         'Invoke-SnipLint', 'Test-SnipLint',
-        'Sync-SnipRepo'
+        'Sync-SnipRepo',
+        'Set-SnipReadLineKey'
     )
 
     AliasesToExport   = @('snip')
@@ -79,7 +80,8 @@
         'Public\Templates.ps1',
         'Public\Linting.ps1',
         'Public\Compare.ps1',
-        'Public\GitSync.ps1'
+        'Public\GitSync.ps1',
+        'Public\PSReadLine.ps1'
     )
 
     PrivateData = @{
