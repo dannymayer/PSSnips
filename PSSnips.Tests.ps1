@@ -522,6 +522,53 @@ Describe 'Backup: Export-SnipCollection' {
             Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
+
+    It 'Export-SnipCollection -IncludeConfig redacts GitHubToken' {
+        # Write a config with a real token into the test config file
+        & (Get-Module PSSnips) {
+            $cfgWithToken = @{ SnippetsDir = $script:SnipDir; GitHubToken = 'ghp_supersecrettoken123' }
+            $cfgWithToken | ConvertTo-Json | Set-Content $script:CfgFile -Encoding UTF8
+        }
+        $zipPath    = Join-Path $script:TestRoot 'redact-test.zip'
+        $extractDir = Join-Path $script:TestRoot 'redact-extract'
+        try {
+            Export-SnipCollection -Path $zipPath -IncludeConfig *>&1 | Out-Null
+            Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+            $exportedCfg = Get-Content (Join-Path $extractDir 'config.json') -Raw | ConvertFrom-Json -AsHashtable
+            $exportedCfg['GitHubToken'] | Should -Be '<REDACTED>'
+            $exportedCfg['GitHubToken'] | Should -Not -Match 'ghp_supersecrettoken123'
+        } finally {
+            Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
+            # Restore config to a clean state
+            & (Get-Module PSSnips) {
+                @{ SnippetsDir = $script:SnipDir } | ConvertTo-Json | Set-Content $script:CfgFile -Encoding UTF8
+            }
+        }
+    }
+
+    It 'Export-SnipCollection -IncludeConfig preserves non-sensitive config keys' {
+        & (Get-Module PSSnips) {
+            $cfgMixed = @{ SnippetsDir = $script:SnipDir; GitHubToken = 'ghp_anothersecret'; Theme = 'Dark' }
+            $cfgMixed | ConvertTo-Json | Set-Content $script:CfgFile -Encoding UTF8
+        }
+        $zipPath    = Join-Path $script:TestRoot 'preserve-test.zip'
+        $extractDir = Join-Path $script:TestRoot 'preserve-extract'
+        try {
+            Export-SnipCollection -Path $zipPath -IncludeConfig *>&1 | Out-Null
+            Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+            $exportedCfg = Get-Content (Join-Path $extractDir 'config.json') -Raw | ConvertFrom-Json -AsHashtable
+            $exportedCfg['Theme']       | Should -Be 'Dark'
+            $exportedCfg['SnippetsDir'] | Should -Not -BeNullOrEmpty
+            $exportedCfg['GitHubToken'] | Should -Be '<REDACTED>'
+        } finally {
+            Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path $zipPath) { Remove-Item $zipPath -Force -ErrorAction SilentlyContinue }
+            & (Get-Module PSSnips) {
+                @{ SnippetsDir = $script:SnipDir } | ConvertTo-Json | Set-Content $script:CfgFile -Encoding UTF8
+            }
+        }
+    }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -932,6 +979,42 @@ Describe 'Sync-SnipRepo' {
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+Describe 'Platform: Conditional variants' {
+    BeforeAll { Clear-TestState }
+
+    It 'New-Snip stores Platforms metadata' {
+        New-Snip -Name 'plat-meta-test' -Language 'ps1' -Content '# platform meta' -Platforms @('windows') *>&1 | Out-Null
+        $idx = & (Get-Module PSSnips) { script:LoadIdx }
+        @($idx.snippets['plat-meta-test'].Platforms) | Should -Contain 'windows'
+    }
+
+    It 'Get-Snip -Platform filters correctly' {
+        New-Snip -Name 'plat-win-only' -Language 'ps1' -Content '# win only filter' -Platforms @('windows') *>&1 | Out-Null
+        New-Snip -Name 'plat-all-plat' -Language 'ps1' -Content '# all plat filter' *>&1 | Out-Null
+        $rows = @(Get-Snip -Platform 'linux')
+        $rows | Where-Object { $_.Name -eq 'plat-win-only' } | Should -BeNullOrEmpty
+        $rows | Where-Object { $_.Name -eq 'plat-all-plat' } | Should -Not -BeNullOrEmpty
+    }
+
+    It 'Invoke-Snip warns on platform mismatch with -Force' {
+        # Use the opposite of current platform so the guard always fires
+        $nonCurrentPlatform = if ($IsWindows) { 'linux' } elseif ($IsLinux) { 'macos' } else { 'windows' }
+        New-Snip -Name 'plat-force-warn' -Language 'ps1' -Content 'Write-Output "ran"' -Platforms @($nonCurrentPlatform) *>&1 | Out-Null
+        $out = & { Invoke-Snip -Name 'plat-force-warn' -Force } *>&1 | Out-String
+        $out | Should -Match '(?i)(targets|platform|Proceeding|-Force)'
+    }
+
+    It 'Invoke-Snip blocks on platform mismatch without -Force' {
+        $nonCurrentPlatform = if ($IsWindows) { 'linux' } elseif ($IsLinux) { 'macos' } else { 'windows' }
+        New-Snip -Name 'plat-no-force-block' -Language 'ps1' -Content 'Write-Output "blocked"' -Platforms @($nonCurrentPlatform) *>&1 | Out-Null
+        $out = & { Invoke-Snip -Name 'plat-no-force-block' } *>&1 | Out-String
+        $out | Should -Match '(?i)(targets|cannot run|Use -Force)'
+        $out | Should -Not -Match 'blocked'
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 Describe 'Namespace: Get-Snip -Namespace filtering' {
     BeforeAll {
         Clear-TestState
@@ -977,5 +1060,26 @@ Describe 'Namespace: Get-Snip -Namespace filtering' {
     It 'Get-Snip Namespace property is empty for snippets without slash' {
         $row = @(Get-Snip -Filter 'local-util') | Select-Object -First 1
         $row.Namespace | Should -Be ''
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+Describe 'Set-SnipReadLineKey' {
+    It 'Set-SnipReadLineKey errors when PSReadLine not available' {
+        Mock -CommandName 'Get-Module' -ParameterFilter { $Name -eq 'PSReadLine' } -MockWith { $null } -ModuleName PSSnips
+        $err = $null
+        Set-SnipReadLineKey -Chord 'Ctrl+Alt+s' -ErrorVariable err -ErrorAction SilentlyContinue
+        $err | Should -Not -BeNullOrEmpty
+        $err[0].Exception.Message | Should -Match 'PSReadLine'
+    }
+
+    It 'Set-SnipReadLineKey -WhatIf does not call Set-PSReadLineKeyHandler' {
+        Mock -CommandName 'Get-Module' -ParameterFilter { $Name -eq 'PSReadLine' } -MockWith {
+            [PSCustomObject]@{ Name = 'PSReadLine'; Version = '2.3.0' }
+        } -ModuleName PSSnips
+        Mock -CommandName 'Set-PSReadLineKeyHandler' -MockWith {} -ModuleName PSSnips
+        Set-SnipReadLineKey -Chord 'Ctrl+Alt+s' -WhatIf
+        Should -Invoke 'Set-PSReadLineKeyHandler' -Times 0 -ModuleName PSSnips
     }
 }

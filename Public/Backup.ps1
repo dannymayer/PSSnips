@@ -23,8 +23,11 @@ function Export-SnipCollection {
         written to the current user's Desktop with a timestamped name.
 
     .PARAMETER IncludeConfig
-        Optional switch. Also includes config.json in the backup. A warning is
-        displayed because config.json may contain a GitHub personal access token.
+        Optional switch. Also includes config.json in the backup. Credential fields
+        (GitHubToken, GitLabToken, BitbucketPassword, BitbucketToken) are automatically
+        redacted to '<REDACTED>' in the exported copy — the local config.json is not
+        modified. Use environment variables or Set-SnipConfig to restore credentials
+        on the target machine.
 
     .EXAMPLE
         Export-SnipCollection
@@ -68,7 +71,7 @@ function Export-SnipCollection {
     }
 
     if ($IncludeConfig) {
-        script:Out-Warn "config.json may contain a GitHub personal access token in plain text."
+        script:Out-Warn "config.json will be included with credential fields redacted. Use -Verbose for details."
     }
 
     # Collect source files
@@ -90,7 +93,29 @@ function Export-SnipCollection {
             Copy-Item $script:IdxFile (Join-Path $stageDir 'index.json') -Force
         }
         if ($IncludeConfig -and (Test-Path $script:CfgFile)) {
-            Copy-Item $script:CfgFile (Join-Path $stageDir 'config.json') -Force
+            $cfgRaw = Get-Content $script:CfgFile -Raw -ErrorAction SilentlyContinue
+            if ($cfgRaw) {
+                try {
+                    $cfgObj = $cfgRaw | ConvertFrom-Json -AsHashtable
+                } catch {
+                    $cfgObj = @{}
+                }
+                # Redact sensitive fields
+                $sensitiveKeys = @('GitHubToken', 'GitLabToken', 'BitbucketPassword', 'BitbucketToken')
+                $redacted = $false
+                foreach ($key in $sensitiveKeys) {
+                    if ($cfgObj.ContainsKey($key) -and $cfgObj[$key]) {
+                        $cfgObj[$key] = '<REDACTED>'
+                        $redacted = $true
+                    }
+                }
+                if ($redacted) {
+                    Write-Warning "One or more credential fields have been redacted from config.json in the export. Use environment variables or Set-SnipConfig to restore them on the target machine."
+                }
+                $redactedJson = $cfgObj | ConvertTo-Json -Depth 5
+                $destCfg = Join-Path $stageDir 'config.json'
+                [System.IO.File]::WriteAllText($destCfg, $redactedJson, (New-Object System.Text.UTF8Encoding $true))
+            }
         }
 
         Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $Path -Force -ErrorAction Stop
