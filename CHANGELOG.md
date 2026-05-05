@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.2.0] — 2026-05-01
+
+### Added
+
+- **`Set-SnipReadLineKey`** (`Public\PSReadLine.ps1`) — bind a PSReadLine keyboard shortcut to the snippet picker.
+  - Default chord: `Ctrl+Alt+S`. `-Chord` overrides. `-Remove` unbinds.
+  - ScriptBlock calls `Invoke-FuzzySnip -PassThru` and inserts content at the cursor; falls back to inserting `Start-SnipManager` if fzf is unavailable.
+  - Requires the `PSReadLine` module; emits a friendly error if not found.
+  - `SupportsShouldProcess` gates the key registration.
+- **`Install-PSSnips -IncludeReadLineKey`** — appends `Set-SnipReadLineKey` to the profile alongside the module import line.
+- **Token redaction in `Export-SnipCollection -IncludeConfig`** — credential fields (`GitHubToken`, `GitLabToken`, `BitbucketPassword`, `BitbucketToken`) are automatically replaced with `<REDACTED>` in the archived `config.json`. A `Write-Warning` is emitted listing redacted fields; non-sensitive keys are preserved verbatim.
+- **Conditional platform variants** — snippets can now declare target platforms.
+  - `New-Snip -Platforms windows,linux,macos` stores a `Platforms` field in metadata.
+  - `Get-Snip -Platform <windows|linux|macos>` filters to compatible snippets (empty `Platforms` = all platforms).
+  - `Invoke-Snip` checks `$IsWindows`/`$IsLinux`/`$IsMacOS` at runtime; emits an error on mismatch. `-Force` overrides with a warning instead.
+  - Tab completion for `New-Snip -Platforms` via `Register-ArgumentCompleter`.
+  - `[SnippetMetadata]` class updated: `Platforms [string[]]` property with `FromHashtable`/`ToHashtable` support.
+
 ## [3.1.0] — 2026-05-01
 
 ### Added
